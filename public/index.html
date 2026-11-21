@@ -83,6 +83,10 @@
   .pill{display:inline-block;padding:5px 14px;border-radius:999px;background:#0007;border:1px solid var(--gold);color:var(--gold);font-weight:700}
   .votebar{height:16px;background:#1b26a8;border-radius:8px;overflow:hidden}
   .votebar>i{display:block;height:100%;background:var(--gold)}
+  .timerbar{height:14px;background:#1b26a8;border-radius:7px;overflow:hidden;margin:12px auto;max-width:540px}
+  .timerbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--gold-soft),var(--gold));transition:width .2s linear}
+  .timerbar>i.low{background:var(--danger)}
+  .js-cd.urgent{color:var(--danger)!important}
   .champ{background:linear-gradient(180deg,#3a2f00,#141000);border:3px solid var(--gold);border-radius:16px;padding:28px;text-align:center}
   .champ .trophy{font-size:74px}
   .champ .wname{font-size:clamp(30px,6vw,54px);font-weight:900;color:var(--gold)}
@@ -146,7 +150,22 @@ function elapsedStr(){
   const h = Math.floor(s/3600), m = Math.floor(s%3600/60), ss = s%60;
   return (h>0 ? h+':' : '') + String(m).padStart(2,'0') + ':' + String(ss).padStart(2,'0');
 }
-setInterval(() => { document.querySelectorAll('.js-clock').forEach(el => el.textContent = '⏱ ' + elapsedStr()); }, 500);
+setInterval(() => {
+  document.querySelectorAll('.js-clock').forEach(el => el.textContent = '⏱ ' + elapsedStr());
+  const t = now();
+  document.querySelectorAll('.js-cd').forEach(el => {
+    const end = +el.dataset.end || 0; if (!end) return;
+    const remain = Math.max(0, Math.ceil((end - t) / 1000));
+    if (el.textContent !== String(remain)) el.textContent = String(remain);
+    el.classList.toggle('urgent', end - t <= 5000 && end - t > 0);
+  });
+  document.querySelectorAll('.js-tfill').forEach(el => {
+    const end = +el.dataset.end || 0, total = (+el.dataset.total || 0) * 1000;
+    if (!end || !total) return;
+    el.style.width = Math.max(0, Math.min(100, (end - t) / total * 100)) + '%';
+    el.classList.toggle('low', end - t <= 5000 && end - t > 0);
+  });
+}, 200);
 function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function errBox(msg){ return msg ? '<div class="err">' + esc(msg) + '</div>' : ''; }
 let uiError = '';
@@ -469,15 +488,16 @@ function renderHost(){
     let phaseUI = '';
     if (c.phase === 'countdown') {
       const n = Math.max(0, Math.ceil((c.phaseEndsAt - now())/1000));
-      phaseUI = `<div class="countnum">${n}</div><p class="center muted">Get ready… buzzing opens at zero!</p>`;
+      phaseUI = `<div class="countnum js-cd" data-end="${c.phaseEndsAt}">${n}</div><p class="center muted">Get ready… buzzing opens at zero!</p>`;
     } else if (c.phase === 'rebuzz') {
       const n = Math.max(0, Math.ceil((c.phaseEndsAt - now())/1000));
-      phaseUI = `<div class="countnum">${n}</div><p class="center muted">Wrong answer — remaining teams, get ready to buzz again!</p>`;
+      phaseUI = `<div class="countnum js-cd" data-end="${c.phaseEndsAt}">${n}</div><p class="center muted">Wrong answer — remaining teams, get ready to buzz again!</p>`;
     } else if (c.phase === 'buzz') {
       phaseUI = `<p class="center"><span class="pill" style="font-size:20px">🔔 BUZZ NOW!</span></p>`;
     } else if (c.phase === 'answer') {
       const secsLeft = c.answerDeadline ? Math.max(0, Math.ceil((c.answerDeadline - now())/1000)) : null;
-      phaseUI = `<p class="center" style="font-size:20px"><b class="gold">${esc(winner ? winner.name : '')}</b> is answering${secsLeft!==null ? ` — <b>${secsLeft}s</b> left` : ''}…</p>` +
+      phaseUI = `<p class="center" style="font-size:20px"><b class="gold">${esc(winner ? winner.name : '')}</b> is answering${secsLeft!==null ? ` — <b><span class="js-cd" data-end="${c.answerDeadline}">${secsLeft}</span>s</b> left` : ''}…</p>` +
+        (c.answerDeadline ? `<div class="timerbar"><i class="js-tfill" data-end="${c.answerDeadline}" data-total="${S.answerSeconds || 15}"></i></div>` : '') +
         (S.template.settings.answerMode === 'oral'
           ? `<div class="row"><button id="h_judge_ok" style="background:linear-gradient(180deg,#5ee79a,#1faf5f);box-shadow:0 3px 0 #0d6e3a">✓ Correct</button>
              <button id="h_judge_no" class="danger">✗ Wrong</button></div>`
@@ -485,7 +505,9 @@ function renderHost(){
     } else if (c.phase === 'reveal') {
       phaseUI = `<div class="center" style="font-size:20px">${c.lastResult === 'correct' ? '✅ <b class="gold">' + esc(winner ? winner.name : '') + '</b> got it right! +' + c.points : '❌ Nobody got it.'}</div>
         <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(c.options[c.correctIndex])}</b></p>
-        <button class="big" id="h_backboard">← Back to the Board</button>`;
+        <button class="big" id="h_next" style="font-size:24px;padding:20px 28px;margin-top:10px">Next Question →</button>
+        <button class="big secondary" id="h_backboard" style="margin-top:10px">← Back to the Board</button>
+        <p class="center muted small" style="margin-top:6px">“Next Question” opens the next question in this category — or returns to the board when the category is finished.</p>`;
     }
     const votes = c.votes || {};
     const totalVotes = Object.values(votes).reduce((a,b)=>a+b,0);
@@ -510,7 +532,8 @@ function renderHost(){
       <h2 class="gold">FINAL JEOPARDY</h2>
       <p class="muted">Category: ${esc(f.category)} · Worth <b class="gold">${S.finalPoints}</b> points</p>
       <div class="qstem">${esc(f.question)}</div>
-      ${S.phase === 'final_answer' ? `<p style="font-size:20px">Captains are writing their answers… <b>${secsLeft}s</b></p>
+      ${S.phase === 'final_answer' ? `<p style="font-size:20px">Captains are writing their answers… <b><span class="js-cd" data-end="${S.finalDeadline || ''}">${secsLeft}</span>s</b></p>
+        <div class="timerbar"><i class="js-tfill" data-end="${S.finalDeadline || ''}" data-total="${S.finalSeconds || 30}"></i></div>
         <p class="muted">${S.teams.filter(t=>f.submissions[t.id]!==undefined).length} of ${S.teams.length} teams have answered</p>
         <button class="big" id="h_tojudge">Close Answers &amp; Judge →</button>`
       : `<p class="muted">Correct answer: <b class="gold">${esc(f.answer)}</b> — mark each team:</p>
@@ -546,6 +569,7 @@ function renderHost(){
   const jno = $('#h_judge_no'); if (jno) jno.onclick = () => api('/api/host/judge', { correct:false }, store.admin);
   const skip = $('#h_skip'); if (skip) skip.onclick = () => api('/api/host/skip', {}, store.admin);
   const bb = $('#h_backboard'); if (bb) bb.onclick = () => api('/api/host/backToBoard', {}, store.admin);
+  const nx = $('#h_next'); if (nx) nx.onclick = () => api('/api/host/next', {}, store.admin).catch(e=>alert(e.message));
   const at = $('#h_audtoggle'); if (at) at.onclick = () => api('/api/host/toggleAudienceResults', { show: !S.showAudienceResults }, store.admin);
   const tj = $('#h_tojudge'); if (tj) tj.onclick = () => api('/api/host/finalJudgePhase', {}, store.admin);
   app.querySelectorAll('[data-fj]').forEach(b => b.onclick = async () => { const [teamId, ok] = b.dataset.fj.split(':'); await api('/api/host/judgeFinal', { teamId, correct: ok==='1' }, store.admin).catch(e=>alert(e.message)); });
@@ -576,7 +600,7 @@ function renderPlayer(){
         ${c.votes ? '<p class="muted" style="margin-top:10px">Live results are on the big screen.</p>' : ''}</div>`;
     } else if (c.phase === 'countdown' || c.phase === 'rebuzz') {
       const n = Math.max(0, Math.ceil((c.phaseEndsAt - now())/1000));
-      body += `<div class="card center"><div class="countnum">${n}</div><p class="muted">${c.phase==='rebuzz' ? 'Next buzz round…' : 'Get ready…'}</p></div>`;
+      body += `<div class="card center"><div class="countnum js-cd" data-end="${c.phaseEndsAt}">${n}</div><p class="muted">${c.phase==='rebuzz' ? 'Next buzz round…' : 'Get ready…'}</p></div>`;
     } else if (c.phase === 'buzz') {
       if (!me.isCaptain) body += `<div class="card center"><h3>Buzzing is open!</h3><p class="muted">Your captain has the buzzer.</p></div>`;
       else if (locked) body += `<div class="card center"><h3>Your team is locked out of this one</h3><p class="muted">A wrong answer earlier — sit this question out.</p></div>`;
@@ -586,9 +610,11 @@ function renderPlayer(){
       if (!mine) body += `<div class="card center"><h3>${esc((S.teams.find(t=>t.id===c.buzzWinnerTeamId)||{}).name || 'Another team')} is answering…</h3></div>`;
       else if (!me.isCaptain) body += `<div class="card center"><h3>Your team got it!</h3><p class="muted">Your captain is answering.</p></div>`;
       else if (S.template && false) { /* placeholder */ }
-      else if (c.options) body += `<div class="card"><h3 class="center gold">Your answer? ${c.answerDeadline ? '(' + Math.max(0, Math.ceil((c.answerDeadline-now())/1000)) + 's)' : ''}</h3>
+      else if (c.options) body += `<div class="card"><h3 class="center gold">Your answer? ${c.answerDeadline ? '(<span class="js-cd" data-end="' + c.answerDeadline + '">' + Math.max(0, Math.ceil((c.answerDeadline-now())/1000)) + '</span>s)' : ''}</h3>
+        ${c.answerDeadline ? '<div class="timerbar"><i class="js-tfill" data-end="' + c.answerDeadline + '" data-total="' + (S.answerSeconds || 15) + '"></i></div>' : ''}
         <div class="opts">${c.options.map((op,i)=>`<button class="opt" data-ans="${i}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}</button>`).join('')}</div></div>`;
-      else body += `<div class="card center"><h3 class="gold">Shout your answer!</h3><p class="muted">The host will judge it. ${c.answerDeadline ? Math.max(0, Math.ceil((c.answerDeadline-now())/1000)) + 's left' : ''}</p></div>`;
+      else body += `<div class="card center"><h3 class="gold">Shout your answer!</h3><p class="muted">The host will judge it. ${c.answerDeadline ? '<span class="js-cd" data-end="' + c.answerDeadline + '">' + Math.max(0, Math.ceil((c.answerDeadline-now())/1000)) + '</span>s left' : ''}</p>
+        ${c.answerDeadline ? '<div class="timerbar"><i class="js-tfill" data-end="' + c.answerDeadline + '" data-total="' + (S.answerSeconds || 15) + '"></i></div>' : ''}</div>`;
     } else if (c.phase === 'reveal') {
       const winnerName = (S.teams.find(t=>t.id===c.buzzWinnerTeamId)||{}).name;
       body += `<div class="card center">${c.lastResult==='correct' ? `<h3>✅ ${esc(winnerName||'')} got it right! +${c.points}</h3>` : '<h3>❌ That question is closed.</h3>'}
@@ -598,7 +624,8 @@ function renderPlayer(){
     if (me.role === 'audience') body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Watch the big screen!</p></div>`;
     else if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer.</p></div>`;
     else body += `<div class="card"><h3 class="center gold">FINAL JEOPARDY — ${S.finalPoints} points</h3>
-      <p class="center muted">Read the question on the big screen. ${S.finalDeadline ? Math.max(0, Math.ceil((S.finalDeadline-now())/1000)) + 's left' : ''}</p>
+      <p class="center muted">Read the question on the big screen. ${S.finalDeadline ? '<span class="js-cd" data-end="' + S.finalDeadline + '">' + Math.max(0, Math.ceil((S.finalDeadline-now())/1000)) + '</span>s left' : ''}</p>
+      ${S.finalDeadline ? '<div class="timerbar"><i class="js-tfill" data-end="' + S.finalDeadline + '" data-total="' + (S.finalSeconds || 30) + '"></i></div>' : ''}
       <label>Your team's answer</label><input id="p_final" value="${esc(S.myFinalAnswer || '')}">
       <div style="height:10px"></div><button class="big" id="p_final_go">${S.myFinalAnswer ? 'Update Answer' : 'Submit Answer'}</button>
       ${S.myFinalAnswer ? '<div class="ok-banner center">Answer submitted ✓</div>' : ''}</div>`;
