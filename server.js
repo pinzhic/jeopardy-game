@@ -96,8 +96,8 @@ function resolveWrong(g, tpl, cq) {
   const q = cq.q;
   const eligible = g.teams.filter(t => !cq.lockedTeamIds.includes(t.id));
   if (q.type === 'choice' && tpl.settings.continueAfterWrong && eligible.length > 0) {
-    cq.phase = 'rebuzz';
-    cq.phaseEndsAt = Date.now() + 3000;
+    cq.phase = 'waiting';
+    cq.phaseEndsAt = null;
     cq.buzzWinnerTeamId = null;
     cq.lastResult = 'wrong-continue';
   } else {
@@ -122,9 +122,7 @@ function tick() {
   let dirty = false;
   const cq = g.current;
   if (cq) {
-    if ((cq.phase === 'countdown' || cq.phase === 'rebuzz') && now >= cq.phaseEndsAt) {
-      cq.phase = 'buzz'; cq.phaseEndsAt = null; dirty = true;
-    } else if (cq.phase === 'answer' && cq.answerDeadline && now > cq.answerDeadline) {
+    if (cq.phase === 'answer' && cq.answerDeadline && now > cq.answerDeadline) {
       const loser = teamById(g, cq.buzzWinnerTeamId);
       if (loser) { applyDeduction(g, tpl, loser, cq.q.points); cq.lockedTeamIds.push(loser.id); }
       cq.timedOut = true;
@@ -175,6 +173,7 @@ function stateFor(client) {
       lastResult: g.current.lastResult, timedOut: g.current.timedOut,
       stem: g.current.q.stem, image: g.current.q.image, type: g.current.q.type,
       options: g.current.q.options, correctIndex: g.current.q.correctIndex, points: g.current.q.points,
+      answer: g.current.q.answer || null,
       votes: voteCounts(g),
     } : null;
     base.finalPoints = g.finalPoints;
@@ -198,8 +197,9 @@ function stateFor(client) {
       phase: cq.phase, phaseEndsAt: cq.phaseEndsAt, answerDeadline: cq.answerDeadline,
       buzzWinnerTeamId: cq.buzzWinnerTeamId, lockedTeamIds: cq.lockedTeamIds,
       lastResult: cq.lastResult, timedOut: cq.timedOut, points: cq.q.points, type: cq.q.type,
-      // options only for the answering captain (phone-answer mode only), and for audience while voting is open
-      options: (isWinningCaptain && cq.phase === 'answer' && g.templateSnapshot.settings.answerMode === 'phone') || (me && me.role === 'audience' && (cq.phase === 'buzz' || cq.phase === 'answer' || cq.phase === 'countdown' || cq.phase === 'rebuzz')) ? cq.q.options : null,
+      // options only for the answering captain (phone-answer mode only), and for audience while voting is open; open questions never expose options
+      options: cq.q.type === 'open' ? null : ((isWinningCaptain && cq.phase === 'answer' && g.templateSnapshot.settings.answerMode === 'phone') || (me && me.role === 'audience' && (cq.phase === 'buzz' || cq.phase === 'answer' || cq.phase === 'waiting')) ? cq.q.options : null),
+      revealedAnswer: cq.phase === 'reveal' && cq.q.type === 'open' ? (cq.q.answer || '') : null,
       myVote: me ? (cq.votes || {})[me.id] : undefined,
       votes: g.showAudienceResults ? voteCounts(g) : null,
       myFinalSubmitted: undefined,
@@ -299,10 +299,18 @@ const routes = {
     if (!found) return send(res, 404, { error: 'question not found' });
     if (g.usedQuestionIds.includes(b.questionId)) return send(res, 400, { error: 'already used' });
     g.phase = 'question';
-    g.current = { q: found.q, groupTitle: found.group.title, phase: 'countdown', phaseEndsAt: Date.now() + 5000,
+    g.current = { q: found.q, groupTitle: found.group.title, phase: 'waiting', phaseEndsAt: null,
       buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, votes: {} };
     changed(); send(res, 200, { ok: true });
   },
+  'POST /api/host/openBuzz': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
+    if (g.current.phase !== 'waiting') return send(res, 400, { error: 'buzzing is not closed' });
+    g.current.phase = 'buzz'; g.current.phaseEndsAt = null;
+    changed(); send(res, 200, { ok: true });
+  },
+  'GET /api/ping': (req, res) => send(res, 200, { ok: true, now: Date.now() }),
   'POST /api/host/judge': async (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
     const b = await readBody(req);
@@ -327,26 +335,7 @@ const routes = {
     g.current = null; if (g.phase === 'question') g.phase = 'board';
     changed(); send(res, 200, { ok: true });
   },
-  'POST /api/host/next': (req, res) => {
-    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
-    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
-    const cq = g.current;
-    if (cq.phase !== 'reveal') return send(res, 400, { error: 'question not finished yet' });
-    if (!g.usedQuestionIds.includes(cq.q.id)) g.usedQuestionIds.push(cq.q.id);
-    const grp = g.templateSnapshot.groups.find(gr => gr.title === cq.groupTitle);
-    let nextQ = null;
-    if (grp) {
-      const idx = grp.questions.findIndex(x => x.id === cq.q.id);
-      nextQ = grp.questions.slice(idx + 1).find(x => !g.usedQuestionIds.includes(x.id)) || null;
-    }
-    if (nextQ) {
-      g.current = { q: nextQ, groupTitle: grp.title, phase: 'countdown', phaseEndsAt: Date.now() + 5000,
-        buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, votes: {} };
-      changed(); return send(res, 200, { ok: true, moved: 'question' });
-    }
-    g.current = null; g.phase = 'board';
-    changed(); send(res, 200, { ok: true, moved: 'board' });
-  },
+
   'POST /api/host/adjust': async (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
     const b = await readBody(req);
