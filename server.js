@@ -157,6 +157,9 @@ function stateFor(client) {
   const base = { serverNow: Date.now(), gameExists: !!g };
   if (!g) return base;
   base.code = g.code; base.phase = g.phase; base.startedAt = g.startedAt;
+  base.answerSeconds = g.templateSnapshot.settings.answerSeconds;
+  base.finalSeconds = g.templateSnapshot.settings.finalSeconds;
+  base.finalDeadline = g.finalDeadline;
   base.teams = publicTeams(g);
   base.audienceCount = g.players.filter(p => p.role === 'audience').length;
   base.audienceMode = g.templateSnapshot.settings.audienceMode;
@@ -320,8 +323,29 @@ const routes = {
   'POST /api/host/backToBoard': (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
     const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    if (g.current && g.current.phase === 'reveal' && !g.usedQuestionIds.includes(g.current.q.id)) g.usedQuestionIds.push(g.current.q.id);
     g.current = null; if (g.phase === 'question') g.phase = 'board';
     changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/next': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
+    const cq = g.current;
+    if (cq.phase !== 'reveal') return send(res, 400, { error: 'question not finished yet' });
+    if (!g.usedQuestionIds.includes(cq.q.id)) g.usedQuestionIds.push(cq.q.id);
+    const grp = g.templateSnapshot.groups.find(gr => gr.title === cq.groupTitle);
+    let nextQ = null;
+    if (grp) {
+      const idx = grp.questions.findIndex(x => x.id === cq.q.id);
+      nextQ = grp.questions.slice(idx + 1).find(x => !g.usedQuestionIds.includes(x.id)) || null;
+    }
+    if (nextQ) {
+      g.current = { q: nextQ, groupTitle: grp.title, phase: 'countdown', phaseEndsAt: Date.now() + 5000,
+        buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, votes: {} };
+      changed(); return send(res, 200, { ok: true, moved: 'question' });
+    }
+    g.current = null; g.phase = 'board';
+    changed(); send(res, 200, { ok: true, moved: 'board' });
   },
   'POST /api/host/adjust': async (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
