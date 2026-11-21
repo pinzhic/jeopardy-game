@@ -144,6 +144,8 @@ function connectSSE(){
   };
 }
 const now = () => Date.now() + serverOffset;
+/* keepalive: while a game is running, ping every 4 minutes so the host never sleeps mid-game */
+setInterval(() => { if (S.gameExists) fetch('/api/ping').catch(() => {}); }, 240000);
 function elapsedStr(){
   if (!S.startedAt) return '00:00';
   let s = Math.max(0, Math.floor((now() - S.startedAt)/1000));
@@ -360,6 +362,7 @@ function renderEditor(){
           <select data-qtype="${gi}:${qi}" style="flex:0 0 170px">
             <option value="tf" ${q.type==='tf'?'selected':''}>True / False</option>
             <option value="choice" ${q.type==='choice'?'selected':''}>Multiple Choice</option>
+            <option value="open" ${q.type==='open'?'selected':''}>Open (no options)</option>
           </select>
           <input type="number" value="${q.points}" data-qpoints="${gi}:${qi}" style="flex:0 0 110px" title="Points">
           <button class="danger" data-delq="${gi}:${qi}" style="flex:0 0 auto">✕</button>
@@ -368,7 +371,9 @@ function renderEditor(){
         <label>Image (optional)</label>
         <input type="file" accept="image/*" data-qimg="${gi}:${qi}">
         ${q.image ? `<img src="${q.image}" style="max-height:90px;border-radius:6px;margin-top:6px">` : ''}
-        ${q.type === 'choice' ? `<label>Options (pick the correct one)</label>` +
+        ${q.type === 'open' ? `<label>Correct answer (host-only — players answer out loud, no options are shown)</label>
+          <input value="${esc(q.answer || '')}" data-qans="${gi}:${qi}" placeholder="e.g. the correct answer text">`
+          : q.type === 'choice' ? `<label>Options (pick the correct one)</label>` +
           q.options.map((op, oi) => `<div class="row" style="align-items:center;margin:4px 0">
             <input type="radio" name="corr-${gi}-${qi}" data-qcorr="${gi}:${qi}" value="${oi}" ${q.correctIndex===oi?'checked':''} style="width:auto;flex:0 0 auto">
             <input value="${esc(op)}" data-qopt="${gi}:${qi}:${oi}" placeholder="Option ${'ABCD'[oi]}"></div>`).join('')
@@ -381,7 +386,8 @@ function renderEditor(){
       <button class="secondary" data-addq="${gi}">+ Add Question</button>
     </div>`).join('');
     groupsEl.querySelectorAll('[data-gtitle]').forEach(el => el.oninput = () => t.groups[+el.dataset.gtitle].title = el.value);
-    groupsEl.querySelectorAll('[data-qtype]').forEach(el => el.onchange = () => { const [gi,qi]=el.dataset.qtype.split(':').map(Number); const q=t.groups[gi].questions[qi]; q.type = el.value; if (q.type==='choice' && q.options.length<3) q.options = ['','','','']; if (q.type==='tf') q.options = [q.options[0]||'True', q.options[1]||'False']; drawGroups(); });
+    groupsEl.querySelectorAll('[data-qtype]').forEach(el => el.onchange = () => { const [gi,qi]=el.dataset.qtype.split(':').map(Number); const q=t.groups[gi].questions[qi]; q.type = el.value; if (q.type==='choice' && q.options.length<3) q.options = ['','','','']; if (q.type==='tf') q.options = [q.options[0]||'True', q.options[1]||'False']; if (q.type==='open') { q.answer = q.answer || (q.options[q.correctIndex] || ''); q.options = []; } drawGroups(); });
+    groupsEl.querySelectorAll('[data-qans]').forEach(el => el.oninput = () => { const [gi,qi]=el.dataset.qans.split(':').map(Number); t.groups[gi].questions[qi].answer = el.value; });
     groupsEl.querySelectorAll('[data-qpoints]').forEach(el => el.oninput = () => { const [gi,qi]=el.dataset.qpoints.split(':').map(Number); t.groups[gi].questions[qi].points = +el.value || 0; });
     groupsEl.querySelectorAll('[data-qstem]').forEach(el => el.oninput = () => { const [gi,qi]=el.dataset.qstem.split(':').map(Number); t.groups[gi].questions[qi].stem = el.value; });
     groupsEl.querySelectorAll('[data-qopt]').forEach(el => el.oninput = () => { const [gi,qi,oi]=el.dataset.qopt.split(':').map(Number); t.groups[gi].questions[qi].options[oi] = el.value; });
@@ -401,7 +407,7 @@ function renderEditor(){
     st.answerSeconds = +$('#ed_secs').value || 0; st.finalSeconds = +$('#ed_fsecs').value || 30;
     st.continueAfterWrong = $('#ed_cont').checked; st.audienceMode = $('#ed_aud').checked;
     t.final = { category: $('#ed_fcat').value, question: $('#ed_fq').value, answer: $('#ed_fa').value, points: +$('#ed_fp').value || 0 };
-    for (const gr of t.groups) for (const q of gr.questions) if (q.type==='choice') q.options = q.options.filter((o,i)=> o.trim()!=='' || i<2);
+    for (const gr of t.groups) for (const q of gr.questions) { if (q.type==='choice') q.options = q.options.filter((o,i)=> o.trim()!=='' || i<2); if (q.type==='open') q.options = []; }
     try { await api('/api/admin/templates', { template: t }, store.admin); editorTpl = null; uiError=''; loadTemplates(); }
     catch(e){ uiError = e.message; render(); }
   };
@@ -486,28 +492,26 @@ function renderHost(){
     const c = S.current;
     const winner = c.buzzWinnerTeamId ? S.teams.find(t=>t.id===c.buzzWinnerTeamId) : null;
     let phaseUI = '';
-    if (c.phase === 'countdown') {
-      const n = Math.max(0, Math.ceil((c.phaseEndsAt - now())/1000));
-      phaseUI = `<div class="countnum js-cd" data-end="${c.phaseEndsAt}">${n}</div><p class="center muted">Get ready… buzzing opens at zero!</p>`;
-    } else if (c.phase === 'rebuzz') {
-      const n = Math.max(0, Math.ceil((c.phaseEndsAt - now())/1000));
-      phaseUI = `<div class="countnum js-cd" data-end="${c.phaseEndsAt}">${n}</div><p class="center muted">Wrong answer — remaining teams, get ready to buzz again!</p>`;
+    if (c.phase === 'waiting') {
+      phaseUI = `${c.lastResult === 'wrong-continue' ? '<p class="center" style="font-size:18px">❌ Wrong answer — that team is out for this question.</p>' : ''}
+        <p class="center muted" style="font-size:18px">Read the question aloud. Buzzing is <b>closed</b> until you open it.</p>
+        <button class="big" id="h_openbuzz" style="font-size:24px;padding:20px 28px;margin-top:8px">🔔 Open Buzzing</button>`;
     } else if (c.phase === 'buzz') {
       phaseUI = `<p class="center"><span class="pill" style="font-size:20px">🔔 BUZZ NOW!</span></p>`;
     } else if (c.phase === 'answer') {
       const secsLeft = c.answerDeadline ? Math.max(0, Math.ceil((c.answerDeadline - now())/1000)) : null;
       phaseUI = `<p class="center" style="font-size:20px"><b class="gold">${esc(winner ? winner.name : '')}</b> is answering${secsLeft!==null ? ` — <b><span class="js-cd" data-end="${c.answerDeadline}">${secsLeft}</span>s</b> left` : ''}…</p>` +
         (c.answerDeadline ? `<div class="timerbar"><i class="js-tfill" data-end="${c.answerDeadline}" data-total="${S.answerSeconds || 15}"></i></div>` : '') +
-        (S.template.settings.answerMode === 'oral'
+        (c.type === 'open' && c.answer ? `<p class="center"><button class="secondary" id="h_showans">👁 Show correct answer (for your judging)</button><span id="h_ans" class="hidden" style="font-size:20px">Correct answer: <b class="gold">${esc(c.answer)}</b></span></p>` : '') +
+        (S.template.settings.answerMode === 'oral' || c.type === 'open'
           ? `<div class="row"><button id="h_judge_ok" style="background:linear-gradient(180deg,#5ee79a,#1faf5f);box-shadow:0 3px 0 #0d6e3a">✓ Correct</button>
              <button id="h_judge_no" class="danger">✗ Wrong</button></div>`
           : '<p class="center muted">The captain is picking an answer on their phone.</p>');
     } else if (c.phase === 'reveal') {
+      const ansText = c.type === 'open' ? (c.answer || '') : c.options[c.correctIndex];
       phaseUI = `<div class="center" style="font-size:20px">${c.lastResult === 'correct' ? '✅ <b class="gold">' + esc(winner ? winner.name : '') + '</b> got it right! +' + c.points : '❌ Nobody got it.'}</div>
-        <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(c.options[c.correctIndex])}</b></p>
-        <button class="big" id="h_next" style="font-size:24px;padding:20px 28px;margin-top:10px">Next Question →</button>
-        <button class="big secondary" id="h_backboard" style="margin-top:10px">← Back to the Board</button>
-        <p class="center muted small" style="margin-top:6px">“Next Question” opens the next question in this category — or returns to the board when the category is finished.</p>`;
+        <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>
+        <button class="big" id="h_backboard" style="margin-top:10px">← Back to the Board</button>`;
     }
     const votes = c.votes || {};
     const totalVotes = Object.values(votes).reduce((a,b)=>a+b,0);
@@ -516,8 +520,8 @@ function renderHost(){
       <div class="qstem">${esc(c.stem)}</div>
       ${c.image ? `<img class="qimg" src="${c.image}">` : ''}
       ${phaseUI}
-      <div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && i===c.correctIndex ? 'correct':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && i===c.correctIndex ? ' ✓':''}</div>`).join('')}</div>
-      ${S.audienceMode ? `<div style="margin-top:16px"><div class="topbar"><h3>Audience votes (${totalVotes})</h3>
+      ${c.options && c.options.length ? `<div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && i===c.correctIndex ? 'correct':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && i===c.correctIndex ? ' ✓':''}</div>`).join('')}</div>` : ''}
+      ${S.audienceMode && c.options && c.options.length ? `<div style="margin-top:16px"><div class="topbar"><h3>Audience votes (${totalVotes})</h3>
         <button class="secondary" id="h_audtoggle">${S.showAudienceResults ? 'Hide from players' : 'Show results'}</button></div>
         ${c.options.map((op, i) => { const v = votes[i]||0; const pct = totalVotes ? Math.round(v/totalVotes*100) : 0;
           return `<div style="margin:6px 0"><div class="small">${'ABCD'[i]}. ${esc(op)} — ${v} (${pct}%)</div><div class="votebar"><i style="width:${pct}%"></i></div></div>`; }).join('')}
@@ -569,7 +573,8 @@ function renderHost(){
   const jno = $('#h_judge_no'); if (jno) jno.onclick = () => api('/api/host/judge', { correct:false }, store.admin);
   const skip = $('#h_skip'); if (skip) skip.onclick = () => api('/api/host/skip', {}, store.admin);
   const bb = $('#h_backboard'); if (bb) bb.onclick = () => api('/api/host/backToBoard', {}, store.admin);
-  const nx = $('#h_next'); if (nx) nx.onclick = () => api('/api/host/next', {}, store.admin).catch(e=>alert(e.message));
+  const ob = $('#h_openbuzz'); if (ob) ob.onclick = () => api('/api/host/openBuzz', {}, store.admin).catch(e=>alert(e.message));
+  const sa = $('#h_showans'); if (sa) sa.onclick = () => { sa.classList.add('hidden'); const a = $('#h_ans'); if (a) a.classList.remove('hidden'); };
   const at = $('#h_audtoggle'); if (at) at.onclick = () => api('/api/host/toggleAudienceResults', { show: !S.showAudienceResults }, store.admin);
   const tj = $('#h_tojudge'); if (tj) tj.onclick = () => api('/api/host/finalJudgePhase', {}, store.admin);
   app.querySelectorAll('[data-fj]').forEach(b => b.onclick = async () => { const [teamId, ok] = b.dataset.fj.split(':'); await api('/api/host/judgeFinal', { teamId, correct: ok==='1' }, store.admin).catch(e=>alert(e.message)); });
@@ -598,9 +603,9 @@ function renderPlayer(){
         ${c.options ? c.options.map((op,i)=>`<button class="opt ${c.myVote===i?'picked':''}" data-vote="${i}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}</button>`).join('')
           : '<p class="muted">Voting opens with the question…</p>'}
         ${c.votes ? '<p class="muted" style="margin-top:10px">Live results are on the big screen.</p>' : ''}</div>`;
-    } else if (c.phase === 'countdown' || c.phase === 'rebuzz') {
-      const n = Math.max(0, Math.ceil((c.phaseEndsAt - now())/1000));
-      body += `<div class="card center"><div class="countnum js-cd" data-end="${c.phaseEndsAt}">${n}</div><p class="muted">${c.phase==='rebuzz' ? 'Next buzz round…' : 'Get ready…'}</p></div>`;
+    } else if (c.phase === 'waiting') {
+      body += `<div class="card center"><h3 class="gold">Question is open</h3><p class="muted">${c.lastResult === 'wrong-continue' ? 'That answer was wrong — the host will reopen buzzing for the remaining teams.' : 'Listen to the question — the host will open buzzing when ready…'}</p>
+        ${me.isCaptain ? '<p>⭐ Captains: get ready to buzz.</p>' : ''}</div>`;
     } else if (c.phase === 'buzz') {
       if (!me.isCaptain) body += `<div class="card center"><h3>Buzzing is open!</h3><p class="muted">Your captain has the buzzer.</p></div>`;
       else if (locked) body += `<div class="card center"><h3>Your team is locked out of this one</h3><p class="muted">A wrong answer earlier — sit this question out.</p></div>`;
@@ -618,7 +623,7 @@ function renderPlayer(){
     } else if (c.phase === 'reveal') {
       const winnerName = (S.teams.find(t=>t.id===c.buzzWinnerTeamId)||{}).name;
       body += `<div class="card center">${c.lastResult==='correct' ? `<h3>✅ ${esc(winnerName||'')} got it right! +${c.points}</h3>` : '<h3>❌ That question is closed.</h3>'}
-        <p class="muted">The correct answer is on the big screen.</p></div>`;
+        ${c.revealedAnswer ? `<p style="font-size:20px">Correct answer: <b class="gold">${esc(c.revealedAnswer)}</b></p>` : '<p class="muted">The correct answer is on the big screen.</p>'}</div>`;
     }
   } else if (S.phase === 'final_answer') {
     if (me.role === 'audience') body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Watch the big screen!</p></div>`;
