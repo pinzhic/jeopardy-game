@@ -1,0 +1,1 @@
+{"description":"Multiplayer Jeopardy game: host console, phone buzzers, audience voting, Final Jeopardy.","engines":{"node":">=18"},"name":"jeopardy-game-app","private":true,"scripts":{"start":"node server.js"},"version":"1.0.0"}

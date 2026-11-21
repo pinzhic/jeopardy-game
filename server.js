@@ -1,0 +1,491 @@
+'use strict';
+/* Jeopardy Game App — standalone server. Zero dependencies (Node >= 18 built-ins only).
+   One active game at a time. State persists to data.json next to this file. */
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PORT = process.env.PORT || 3000;
+const DATA_FILE = path.join(__dirname, 'data.json');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const ADMINS = [
+  { username: 'admin1', password: 'admin123' },
+  { username: 'admin2', password: 'admin123' },
+  { username: 'host1', password: 'host123' },
+];
+
+const uid = () => crypto.randomBytes(8).toString('hex');
+const token = () => crypto.randomBytes(24).toString('hex');
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const newCode = () => Array.from({ length: 4 }, () => CODE_CHARS[crypto.randomInt(CODE_CHARS.length)]).join('');
+
+function sampleTemplate() {
+  const q = (type, points, stem, options, correctIndex) => ({ id: uid(), type, points, stem, image: '', options, correctIndex });
+  return {
+    id: uid(), name: 'Tech & AI Night',
+    settings: { answerMode: 'phone', deduction: 'full', continueAfterWrong: true, answerSeconds: 10, audienceMode: true, finalSeconds: 30 },
+    groups: [
+      { id: uid(), title: 'AI versus Human', questions: [
+        q('tf', 100, '"The moon tonight is a silver coin hung in a velvet sky." — AI or Human? (True = AI-generated, False = Human-written)', ['AI-generated', 'Human-written'], 1),
+        q('tf', 200, '"As an AI language model, I can help you write a poem about the moon in a variety of styles and tones." — True = AI-generated, False = Human-written', ['AI-generated', 'Human-written'], 0),
+        q('tf', 300, '"I keep the porch light on for my brother. He\'s been gone six years, but the bulb is cheap and so is hope." — True = AI-generated, False = Human-written', ['AI-generated', 'Human-written'], 1),
+      ]},
+      { id: uid(), title: 'Space & Science', questions: [
+        q('choice', 100, 'Which planet has the largest ring system?', ['Jupiter', 'Saturn', 'Uranus', 'Neptune'], 1),
+        q('choice', 200, 'What is the chemical symbol for gold?', ['Gd', 'Go', 'Au', 'Ag'], 2),
+        q('choice', 300, 'How many sides does a hexagon have?', ['Five', 'Six', 'Seven'], 1),
+      ]},
+      { id: uid(), title: 'World Capitals', questions: [
+        q('choice', 100, 'What is the capital of Japan?', ['Seoul', 'Beijing', 'Tokyo', 'Bangkok'], 2),
+        q('choice', 200, 'What is the capital of Australia?', ['Sydney', 'Canberra', 'Melbourne', 'Perth'], 1),
+        q('choice', 300, 'The capital of Canada is…', ['Toronto', 'Vancouver', 'Ottawa'], 2),
+      ]},
+    ],
+    final: { category: 'Classic Literature', question: 'This 19th-century novel opens with the line "Call me Ishmael."', answer: 'Moby-Dick', points: 1000 },
+  };
+}
+
+function loadData() {
+  try {
+    const raw = fs.readFileSync(DATA_FILE, 'utf8');
+    const d = JSON.parse(raw);
+    if (d && Array.isArray(d.templates)) return d;
+  } catch (e) { /* first run */ }
+  return { templates: [sampleTemplate()], game: null };
+}
+let DB = loadData();
+let saveTimer = null;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => { try { fs.writeFileSync(DATA_FILE, JSON.stringify(DB, null, 1)); } catch (e) {} }, 120);
+}
+
+/* sessions: token -> {kind:'admin', username} | {kind:'player', playerId, gameCode} */
+const sessions = new Map();
+/* SSE clients: Set of {res, role, token} */
+const sseClients = new Set();
+
+function currentGame() { return DB.game; }
+
+function broadcast() {
+  for (const c of sseClients) {
+    try { c.res.write('data: ' + JSON.stringify(stateFor(c)) + '\n\n'); } catch (e) { sseClients.delete(c); }
+  }
+}
+function changed() { save(); broadcast(); }
+
+/* ---------- game engine ---------- */
+function teamById(g, id) { return g.teams.find(t => t.id === id); }
+function playerById(g, id) { return g.players.find(p => p.id === id); }
+
+function questionById(tpl, qid) {
+  for (const gr of tpl.groups) { const q = gr.questions.find(x => x.id === qid); if (q) return { group: gr, q }; }
+  return null;
+}
+
+function applyDeduction(g, tpl, team, points) {
+  const mode = tpl.settings.deduction;
+  const d = mode === 'full' ? points : mode === 'half' ? Math.floor(points / 2) : 0;
+  team.score -= d;
+}
+
+function resolveWrong(g, tpl, cq) {
+  // cq = current question runtime
+  const q = cq.q;
+  const eligible = g.teams.filter(t => !cq.lockedTeamIds.includes(t.id));
+  if (q.type === 'choice' && tpl.settings.continueAfterWrong && eligible.length > 0) {
+    cq.phase = 'rebuzz';
+    cq.phaseEndsAt = Date.now() + 3000;
+    cq.buzzWinnerTeamId = null;
+    cq.lastResult = 'wrong-continue';
+  } else {
+    cq.phase = 'reveal';
+    cq.lastResult = 'wrong-final';
+  }
+}
+
+function resolveCorrect(g, cq) {
+  const winner = teamById(g, cq.buzzWinnerTeamId);
+  if (winner) winner.score += cq.q.points;
+  cq.phase = 'reveal';
+  cq.lastResult = 'correct';
+  g.usedQuestionIds.push(cq.q.id);
+}
+
+function tick() {
+  const g = currentGame();
+  if (!g || !g.templateSnapshot) return;
+  const tpl = g.templateSnapshot;
+  const now = Date.now();
+  let dirty = false;
+  const cq = g.current;
+  if (cq) {
+    if ((cq.phase === 'countdown' || cq.phase === 'rebuzz') && now >= cq.phaseEndsAt) {
+      cq.phase = 'buzz'; cq.phaseEndsAt = null; dirty = true;
+    } else if (cq.phase === 'answer' && cq.answerDeadline && now > cq.answerDeadline) {
+      const loser = teamById(g, cq.buzzWinnerTeamId);
+      if (loser) { applyDeduction(g, tpl, loser, cq.q.points); cq.lockedTeamIds.push(loser.id); }
+      cq.timedOut = true;
+      resolveWrong(g, tpl, cq);
+      dirty = true;
+    }
+  }
+  if (g.phase === 'final_answer' && g.finalDeadline && now > g.finalDeadline) {
+    g.phase = 'final_judge'; dirty = true;
+  }
+  if (dirty) changed();
+}
+setInterval(tick, 250);
+
+/* ---------- state views (never leak answers to players) ---------- */
+function publicTeams(g) {
+  return g.teams.map(t => ({ id: t.id, name: t.name, score: t.score, captainId: t.captainId,
+    members: g.players.filter(p => p.teamId === t.id).map(p => ({ id: p.id, name: p.name })) }));
+}
+function voteCounts(g) {
+  const counts = {};
+  if (g.current) for (const pid of Object.keys(g.current.votes || {})) {
+    const v = g.current.votes[pid]; counts[v] = (counts[v] || 0) + 1;
+  }
+  return counts;
+}
+
+function stateFor(client) {
+  const g = currentGame();
+  const base = { serverNow: Date.now(), gameExists: !!g };
+  if (!g) return base;
+  base.code = g.code; base.phase = g.phase; base.startedAt = g.startedAt;
+  base.teams = publicTeams(g);
+  base.audienceCount = g.players.filter(p => p.role === 'audience').length;
+  base.audienceMode = g.templateSnapshot.settings.audienceMode;
+  base.showAudienceResults = g.showAudienceResults;
+
+  if (client.kind === 'admin') {
+    base.template = g.templateSnapshot;
+    base.usedQuestionIds = g.usedQuestionIds;
+    base.current = g.current ? {
+      qid: g.current.q.id, groupTitle: g.current.groupTitle, phase: g.current.phase,
+      phaseEndsAt: g.current.phaseEndsAt, answerDeadline: g.current.answerDeadline,
+      buzzWinnerTeamId: g.current.buzzWinnerTeamId, lockedTeamIds: g.current.lockedTeamIds,
+      lastResult: g.current.lastResult, timedOut: g.current.timedOut,
+      stem: g.current.q.stem, image: g.current.q.image, type: g.current.q.type,
+      options: g.current.q.options, correctIndex: g.current.q.correctIndex, points: g.current.q.points,
+      votes: voteCounts(g),
+    } : null;
+    base.finalPoints = g.finalPoints;
+    base.final = g.phase.startsWith('final') || g.phase === 'finished' ? {
+      category: g.templateSnapshot.final.category, question: g.templateSnapshot.final.question,
+      answer: g.templateSnapshot.final.answer,
+      submissions: g.finalSubmissions, judged: g.finalJudged,
+    } : null;
+    return base;
+  }
+
+  // player view
+  const me = client.playerId ? playerById(g, client.playerId) : null;
+  base.me = me ? { id: me.id, name: me.name, role: me.role, teamId: me.teamId, isCaptain: me.role === 'player' && teamById(g, me.teamId) && teamById(g, me.teamId).captainId === me.id } : null;
+  base.usedQuestionIds = g.usedQuestionIds;
+  base.board = g.templateSnapshot.groups.map(gr => ({ title: gr.title, questions: gr.questions.map(q => ({ id: q.id, points: q.points })) }));
+  if (g.current) {
+    const cq = g.current;
+    const isWinningCaptain = base.me && base.me.isCaptain && cq.buzzWinnerTeamId === me.teamId;
+    base.current = {
+      phase: cq.phase, phaseEndsAt: cq.phaseEndsAt, answerDeadline: cq.answerDeadline,
+      buzzWinnerTeamId: cq.buzzWinnerTeamId, lockedTeamIds: cq.lockedTeamIds,
+      lastResult: cq.lastResult, timedOut: cq.timedOut, points: cq.q.points, type: cq.q.type,
+      // options only for the answering captain (phone-answer mode only), and for audience while voting is open
+      options: (isWinningCaptain && cq.phase === 'answer' && g.templateSnapshot.settings.answerMode === 'phone') || (me && me.role === 'audience' && (cq.phase === 'buzz' || cq.phase === 'answer' || cq.phase === 'countdown' || cq.phase === 'rebuzz')) ? cq.q.options : null,
+      myVote: me ? (cq.votes || {})[me.id] : undefined,
+      votes: g.showAudienceResults ? voteCounts(g) : null,
+      myFinalSubmitted: undefined,
+    };
+  }
+  if (g.phase === 'final_answer' || g.phase === 'final_judge' || g.phase === 'finished') {
+    base.finalPoints = g.finalPoints;
+    base.finalDeadline = g.finalDeadline;
+    if (me) base.myFinalAnswer = g.finalSubmissions[me.teamId] || null;
+    if (g.phase === 'finished') base.finalStandings = publicTeams(g).slice().sort((a, b) => b.score - a.score);
+  }
+  return base;
+}
+
+/* ---------- http helpers ---------- */
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', c => { data += c; if (data.length > 8 * 1024 * 1024) reject(new Error('too big')); });
+    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { resolve({}); } });
+    req.on('error', reject);
+  });
+}
+function send(res, code, obj) {
+  const body = JSON.stringify(obj);
+  res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  res.end(body);
+}
+function authAdmin(req) {
+  const t = (req.headers.authorization || '').replace('Bearer ', '');
+  const s = sessions.get(t);
+  return s && s.kind === 'admin' ? s : null;
+}
+function authPlayer(req) {
+  const t = (req.headers.authorization || '').replace('Bearer ', '');
+  const s = sessions.get(t);
+  return s && s.kind === 'player' ? s : null;
+}
+
+const routes = {
+  'POST /api/admin/login': async (req, res) => {
+    const b = await readBody(req);
+    const a = ADMINS.find(x => x.username === b.username && x.password === b.password);
+    if (!a) return send(res, 401, { error: 'Invalid username or password' });
+    const t = token(); sessions.set(t, { kind: 'admin', username: a.username });
+    send(res, 200, { token: t, username: a.username });
+  },
+  'GET /api/admin/templates': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    send(res, 200, { templates: DB.templates });
+  },
+  'POST /api/admin/templates': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const tpl = b.template;
+    if (!tpl || !tpl.name) return send(res, 400, { error: 'template.name required' });
+    tpl.id = tpl.id || uid();
+    const i = DB.templates.findIndex(t => t.id === tpl.id);
+    if (i >= 0) DB.templates[i] = tpl; else DB.templates.push(tpl);
+    changed(); send(res, 200, { template: tpl });
+  },
+  'DELETE /api/admin/templates': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    DB.templates = DB.templates.filter(t => t.id !== b.id);
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/start': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const tpl = DB.templates.find(t => t.id === b.templateId);
+    if (!tpl) return send(res, 404, { error: 'template not found' });
+    if (DB.game && DB.game.phase !== 'finished') return send(res, 409, { error: 'A game is already active. End it first.' });
+    DB.game = {
+      code: newCode(), phase: 'lobby', templateSnapshot: JSON.parse(JSON.stringify(tpl)),
+      teams: [], players: [], usedQuestionIds: [], current: null,
+      startedAt: null, finalPoints: tpl.final.points || 1000,
+      finalSubmissions: {}, finalJudged: {}, showAudienceResults: false, finalDeadline: null,
+    };
+    changed(); send(res, 200, { code: DB.game.code });
+  },
+  'POST /api/host/end': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    DB.game = null; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/begin': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    if (g.teams.length === 0) return send(res, 400, { error: 'At least one team must join first' });
+    g.phase = 'board'; g.startedAt = Date.now(); changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/open': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    const found = questionById(g.templateSnapshot, b.questionId);
+    if (!found) return send(res, 404, { error: 'question not found' });
+    if (g.usedQuestionIds.includes(b.questionId)) return send(res, 400, { error: 'already used' });
+    g.phase = 'question';
+    g.current = { q: found.q, groupTitle: found.group.title, phase: 'countdown', phaseEndsAt: Date.now() + 5000,
+      buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, votes: {} };
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/judge': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
+    const cq = g.current; if (cq.phase !== 'answer') return send(res, 400, { error: 'not in answer phase' });
+    const team = teamById(g, cq.buzzWinnerTeamId);
+    if (b.correct) { resolveCorrect(g, cq); }
+    else { if (team) { applyDeduction(g, g.templateSnapshot, team, cq.q.points); cq.lockedTeamIds.push(team.id); } resolveWrong(g, g.templateSnapshot, cq); }
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/skip': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    if (g.current) g.usedQuestionIds.push(g.current.q.id);
+    g.current = null; if (g.phase === 'question') g.phase = 'board';
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/backToBoard': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    g.current = null; if (g.phase === 'question') g.phase = 'board';
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/adjust': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    const t = teamById(g, b.teamId); if (!t) return send(res, 404, { error: 'team not found' });
+    t.score += Number(b.delta) || 0; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/setFinalPoints': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    g.finalPoints = Number(b.points) || 0; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/toggleAudienceResults': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    g.showAudienceResults = !!b.show; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/startFinal': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    g.current = null; g.phase = 'final_answer';
+    g.finalDeadline = Date.now() + (g.templateSnapshot.settings.finalSeconds || 30) * 1000;
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/finalJudgePhase': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    g.phase = 'final_judge'; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/judgeFinal': async (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    if (g.finalJudged[b.teamId] !== undefined) return send(res, 400, { error: 'already judged' });
+    const t = teamById(g, b.teamId); if (!t) return send(res, 404, { error: 'team not found' });
+    g.finalJudged[b.teamId] = !!b.correct;
+    t.score += b.correct ? g.finalPoints : -g.finalPoints;
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/finish': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    g.phase = 'finished'; g.current = null; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/game/find': async (req, res) => {
+    const b = await readBody(req);
+    const g = currentGame();
+    if (!g || g.code !== String(b.code || '').toUpperCase().trim()) return send(res, 404, { error: 'Game not found. Check the code.' });
+    send(res, 200, { code: g.code, phase: g.phase, audienceMode: g.templateSnapshot.settings.audienceMode,
+      teams: g.teams.map(t => ({ id: t.id, name: t.name, members: g.players.filter(p => p.teamId === t.id).length })) });
+  },
+  'POST /api/game/join': async (req, res) => {
+    const b = await readBody(req);
+    const g = currentGame();
+    if (!g || g.code !== String(b.code || '').toUpperCase().trim()) return send(res, 404, { error: 'Game not found' });
+    const name = String(b.name || '').trim();
+    if (!name) return send(res, 400, { error: 'Name required' });
+    const existing = g.players.find(p => p.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      if (!b.replace) return send(res, 200, { status: 'exists' });
+      // take over: kill old sessions for this player
+      for (const [tk, s] of sessions) if (s.kind === 'player' && s.playerId === existing.id) sessions.delete(tk);
+      const t = token(); sessions.set(t, { kind: 'player', playerId: existing.id, gameCode: g.code });
+      changed(); return send(res, 200, { status: 'joined', token: t, playerId: existing.id });
+    }
+    if (g.phase !== 'lobby') return send(res, 403, { error: 'This game has already started — joining is closed.' });
+    let player;
+    if (b.mode === 'audience') {
+      if (!g.templateSnapshot.settings.audienceMode) return send(res, 400, { error: 'Audience mode is off for this game' });
+      player = { id: uid(), name, role: 'audience', teamId: null };
+    } else if (b.mode === 'create') {
+      const teamName = String(b.teamName || '').trim();
+      if (!teamName) return send(res, 400, { error: 'Team name required' });
+      if (g.teams.find(t => t.name.toLowerCase() === teamName.toLowerCase())) return send(res, 400, { error: 'That team name is taken' });
+      const team = { id: uid(), name: teamName, score: 0, captainId: null };
+      player = { id: uid(), name, role: 'player', teamId: team.id };
+      team.captainId = player.id;
+      g.teams.push(team);
+    } else if (b.mode === 'join') {
+      const team = teamById(g, b.teamId);
+      if (!team) return send(res, 404, { error: 'Team not found' });
+      player = { id: uid(), name, role: 'player', teamId: team.id };
+    } else return send(res, 400, { error: 'mode must be create, join, or audience' });
+    g.players.push(player);
+    const t = token(); sessions.set(t, { kind: 'player', playerId: player.id, gameCode: g.code });
+    changed(); send(res, 200, { status: 'joined', token: t, playerId: player.id });
+  },
+  'POST /api/player/buzz': (req, res) => {
+    const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
+    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
+    const me = playerById(g, s.playerId); if (!me || me.role !== 'player') return send(res, 403, { error: 'players only' });
+    const team = teamById(g, me.teamId);
+    if (!team || team.captainId !== me.id) return send(res, 403, { error: 'Only the team captain can buzz' });
+    const cq = g.current;
+    if (cq.phase !== 'buzz') return send(res, 400, { error: 'Buzzing is not open' });
+    if (cq.lockedTeamIds.includes(team.id)) return send(res, 400, { error: 'Your team is locked out of this question' });
+    cq.buzzWinnerTeamId = team.id; cq.phase = 'answer';
+    const secs = g.templateSnapshot.settings.answerSeconds;
+    cq.answerDeadline = secs > 0 ? Date.now() + secs * 1000 : null;
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/player/answer': async (req, res) => {
+    const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
+    const me = playerById(g, s.playerId); if (!me) return send(res, 403, { error: 'not in game' });
+    const cq = g.current;
+    if (cq.phase !== 'answer' || cq.buzzWinnerTeamId !== me.teamId) return send(res, 400, { error: 'Not your turn to answer' });
+    const team = teamById(g, me.teamId);
+    if (g.templateSnapshot.settings.answerMode !== 'phone') return send(res, 400, { error: 'This game uses oral answers — the host judges' });
+    const correct = Number(b.choiceIndex) === cq.q.correctIndex;
+    if (correct) resolveCorrect(g, cq);
+    else { applyDeduction(g, g.templateSnapshot, team, cq.q.points); cq.lockedTeamIds.push(team.id); resolveWrong(g, g.templateSnapshot, cq); }
+    changed(); send(res, 200, { ok: true, correct });
+  },
+  'POST /api/player/vote': async (req, res) => {
+    const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
+    const me = playerById(g, s.playerId); if (!me || me.role !== 'audience') return send(res, 403, { error: 'audience only' });
+    g.current.votes = g.current.votes || {};
+    g.current.votes[me.id] = Number(b.choiceIndex);
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/player/finalAnswer': async (req, res) => {
+    const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    const me = playerById(g, s.playerId); if (!me || me.role !== 'player') return send(res, 403, { error: 'players only' });
+    const team = teamById(g, me.teamId);
+    if (!team || team.captainId !== me.id) return send(res, 403, { error: 'Only the captain submits the Final answer' });
+    if (g.phase !== 'final_answer') return send(res, 400, { error: 'Final answers are not open' });
+    g.finalSubmissions[me.teamId] = String(b.text || '').slice(0, 500);
+    changed(); send(res, 200, { ok: true });
+  },
+};
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://x');
+  const key = req.method + ' ' + url.pathname;
+  if (url.pathname === '/api/events') {
+    const t = url.searchParams.get('token') || '';
+    const s = sessions.get(t);
+    const client = { res, kind: s ? s.kind : 'anon', playerId: s && s.kind === 'player' ? s.playerId : null };
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+    res.write('data: ' + JSON.stringify(stateFor(client)) + '\n\n');
+    sseClients.add(client);
+    const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch (e) {} }, 20000);
+    req.on('close', () => { clearInterval(hb); sseClients.delete(client); });
+    return;
+  }
+  if (routes[key]) { try { await routes[key](req, res); } catch (e) { send(res, 500, { error: String(e && e.message || e) }); } return; }
+  // static
+  let file = url.pathname === '/' ? '/index.html' : url.pathname;
+  const full = path.join(PUBLIC_DIR, path.normalize(file).replace(/^(\.\.[\/\\])+/, ''));
+  fs.readFile(full, (err, data) => {
+    if (err) { res.writeHead(404); res.end('not found'); return; }
+    const ext = path.extname(full);
+    const type = ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript' : ext === '.css' ? 'text/css' : 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': type });
+    res.end(data);
+  });
+});
+server.listen(PORT, () => console.log('Jeopardy server listening on port ' + PORT));
