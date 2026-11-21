@@ -81,8 +81,20 @@
   .buzzer:active{transform:translateY(8px);box-shadow:0 4px 0 #5f0000}
   .buzzer:disabled{background:radial-gradient(circle at 35% 30%, #5a63b8, #232a7a 60%, #141a52);border-color:#4653e0;box-shadow:none;font-size:22px}
   .pill{display:inline-block;padding:5px 14px;border-radius:999px;background:#0007;border:1px solid var(--gold);color:var(--gold);font-weight:700}
-  .votebar{height:16px;background:#1b26a8;border-radius:8px;overflow:hidden}
-  .votebar>i{display:block;height:100%;background:var(--gold)}
+  /* host one-screen layout: main stage + sticky side scoreboard, minimal scrolling */
+  .hostwrap{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start}
+  .hostside{position:sticky;top:10px}
+  .hostside .scores{grid-template-columns:1fr;margin:0 0 12px}
+  .hostside .scorebox{padding:9px}
+  .hostside .scorebox .tscore{font-size:26px}
+  @media(max-width:920px){.hostwrap{grid-template-columns:1fr}.hostside{position:static}}
+  .adjcustom{display:flex;gap:6px;justify-content:center;margin-top:6px}
+  .adjcustom input{width:92px;padding:5px 8px;font-size:13px;text-align:center}
+  .adjcustom button{padding:5px 10px;font-size:13px}
+  .tile{padding:13px 4px}
+  .board .colhead{min-height:46px;padding:8px 6px}
+  .qstem{padding:10px 8px}
+  .qimg{max-height:290px}
   .timerbar{height:14px;background:#1b26a8;border-radius:7px;overflow:hidden;margin:12px auto;max-width:540px}
   .timerbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--gold-soft),var(--gold));transition:width .2s linear}
   .timerbar>i.low{background:var(--danger)}
@@ -242,7 +254,6 @@ function renderJoinArea(){
     <div class="row">
       <button class="secondary" id="j_create">Create a Team</button>
       <button class="secondary" id="j_jointeam">Join a Team</button>
-      ${info.audienceMode ? '<button class="secondary" id="j_aud">Audience</button>' : ''}
     </div>
     <div id="j_sub" style="margin-top:10px"></div>`;
   const nameVal = () => { joinCtx.name = $('#j_name').value.trim(); return joinCtx.name; };
@@ -273,8 +284,6 @@ function renderJoinArea(){
       : '<p class="muted">No teams yet — create the first one.</p>';
     area.querySelectorAll('[data-team]').forEach(b => b.onclick = () => doJoin({ mode:'join', teamId: b.dataset.team }));
   };
-  const audBtn = $('#j_aud');
-  if (audBtn) audBtn.onclick = () => { if (!nameVal()) { $('#j_exists').innerHTML = errBox('Enter your name first'); return; } doJoin({ mode:'audience' }); };
 }
 
 /* ================= admin ================= */
@@ -285,7 +294,7 @@ async function loadTemplates(){
 function blankQuestion(){ return { id: Math.random().toString(16).slice(2,10), type:'choice', points:100, stem:'', image:'', options:['','','',''], correctIndex:0 }; }
 function blankTemplate(){
   return { id:'', name:'New Game Template',
-    settings:{ answerMode:'phone', deduction:'full', continueAfterWrong:true, answerSeconds:10, audienceMode:false, finalSeconds:30 },
+    settings:{ answerMode:'phone', deduction:'full', continueAfterWrong:true, answerSeconds:10, finalSeconds:30 },
     groups:[{ id: Math.random().toString(16).slice(2,10), title:'Round 1', questions:[blankQuestion()] }],
     final:{ category:'Final', question:'', answer:'', points:1000 } };
 }
@@ -339,7 +348,6 @@ function renderEditor(){
       <div><label>Final Jeopardy answer time (seconds)</label><input id="ed_fsecs" type="number" min="5" value="${st.finalSeconds||30}"></div>
     </div>
     <label><input type="checkbox" id="ed_cont" style="width:auto" ${st.continueAfterWrong?'checked':''}> Choice questions: let other teams keep buzzing after a wrong answer (instead of revealing the answer right away)</label>
-    <label><input type="checkbox" id="ed_aud" style="width:auto" ${st.audienceMode?'checked':''}> Audience mode (audience can join and vote on questions)</label>
   </div>
   <div id="ed_groups"></div>
   <button class="secondary" id="ed_addgroup">+ Add Question Group</button>
@@ -349,6 +357,7 @@ function renderEditor(){
     <label>Question</label><textarea id="ed_fq" rows="2">${esc(t.final.question)}</textarea>
     <label>Correct answer</label><input id="ed_fa" value="${esc(t.final.answer)}">
     <label>Points (host can change this live during the game)</label><input id="ed_fp" type="number" value="${t.final.points}">
+    <label><input type="checkbox" id="ed_fhost" style="width:auto" ${t.final.hostScored?'checked':''}> Host-scored Final — teams answer offline (slides / paper), no phone answers; the host marks each team ✓/✗ for ±points</label>
   </div>`;
   const groupsEl = $('#ed_groups');
   const drawGroups = () => {
@@ -376,7 +385,8 @@ function renderEditor(){
           : q.type === 'choice' ? `<label>Options (pick the correct one)</label>` +
           q.options.map((op, oi) => `<div class="row" style="align-items:center;margin:4px 0">
             <input type="radio" name="corr-${gi}-${qi}" data-qcorr="${gi}:${qi}" value="${oi}" ${q.correctIndex===oi?'checked':''} style="width:auto;flex:0 0 auto">
-            <input value="${esc(op)}" data-qopt="${gi}:${qi}:${oi}" placeholder="Option ${'ABCD'[oi]}"></div>`).join('')
+            <input value="${esc(op)}" data-qopt="${gi}:${qi}:${oi}" placeholder="Option ${'ABCD'[oi]}"></div>`).join('') +
+          `<label><input type="checkbox" data-qhj="${gi}:${qi}" style="width:auto" ${q.hostJudge?'checked':''}> Host judges this question — the captain's phone pick (A/B/C…) is recorded, NOT auto-scored (use for slide/PPT questions)</label>`
           : `<label>Correct answer</label><select data-qtf="${gi}:${qi}">
               <option value="0" ${q.correctIndex===0?'selected':''}>${esc(q.options[0] || 'True / Statement is AI-generated')}</option>
               <option value="1" ${q.correctIndex===1?'selected':''}>${esc(q.options[1] || 'False / Statement is Human-written')}</option></select>
@@ -388,6 +398,7 @@ function renderEditor(){
     groupsEl.querySelectorAll('[data-gtitle]').forEach(el => el.oninput = () => t.groups[+el.dataset.gtitle].title = el.value);
     groupsEl.querySelectorAll('[data-qtype]').forEach(el => el.onchange = () => { const [gi,qi]=el.dataset.qtype.split(':').map(Number); const q=t.groups[gi].questions[qi]; q.type = el.value; if (q.type==='choice' && q.options.length<3) q.options = ['','','','']; if (q.type==='tf') q.options = [q.options[0]||'True', q.options[1]||'False']; if (q.type==='open') { q.answer = q.answer || (q.options[q.correctIndex] || ''); q.options = []; } drawGroups(); });
     groupsEl.querySelectorAll('[data-qans]').forEach(el => el.oninput = () => { const [gi,qi]=el.dataset.qans.split(':').map(Number); t.groups[gi].questions[qi].answer = el.value; });
+    groupsEl.querySelectorAll('[data-qhj]').forEach(el => el.onchange = () => { const [gi,qi]=el.dataset.qhj.split(':').map(Number); t.groups[gi].questions[qi].hostJudge = el.checked; });
     groupsEl.querySelectorAll('[data-qpoints]').forEach(el => el.oninput = () => { const [gi,qi]=el.dataset.qpoints.split(':').map(Number); t.groups[gi].questions[qi].points = +el.value || 0; });
     groupsEl.querySelectorAll('[data-qstem]').forEach(el => el.oninput = () => { const [gi,qi]=el.dataset.qstem.split(':').map(Number); t.groups[gi].questions[qi].stem = el.value; });
     groupsEl.querySelectorAll('[data-qopt]').forEach(el => el.oninput = () => { const [gi,qi,oi]=el.dataset.qopt.split(':').map(Number); t.groups[gi].questions[qi].options[oi] = el.value; });
@@ -405,8 +416,8 @@ function renderEditor(){
     t.name = $('#ed_name').value.trim() || 'Untitled';
     st.answerMode = $('#ed_mode').value; st.deduction = $('#ed_ded').value;
     st.answerSeconds = +$('#ed_secs').value || 0; st.finalSeconds = +$('#ed_fsecs').value || 30;
-    st.continueAfterWrong = $('#ed_cont').checked; st.audienceMode = $('#ed_aud').checked;
-    t.final = { category: $('#ed_fcat').value, question: $('#ed_fq').value, answer: $('#ed_fa').value, points: +$('#ed_fp').value || 0 };
+    st.continueAfterWrong = $('#ed_cont').checked;
+    t.final = { category: $('#ed_fcat').value, question: $('#ed_fq').value, answer: $('#ed_fa').value, points: +$('#ed_fp').value || 0, hostScored: $('#ed_fhost').checked };
     for (const gr of t.groups) for (const q of gr.questions) { if (q.type==='choice') q.options = q.options.filter((o,i)=> o.trim()!=='' || i<2); if (q.type==='open') q.options = []; }
     try { await api('/api/admin/templates', { template: t }, store.admin); editorTpl = null; uiError=''; loadTemplates(); }
     catch(e){ uiError = e.message; render(); }
@@ -424,13 +435,20 @@ function scoreboardHTML(host){
       <div class="tname">${esc(t.name)}</div>
       <div class="tscore ${t.score<0?'neg':''}">${t.score}</div>
       <div class="members">${t.members.map(m=>esc(m.name)).join(', ') || '—'}</div>
-      ${host ? `<div class="adj"><button data-adj="${t.id}:-100">−100</button><button data-adj="${t.id}:-50">−50</button><button data-adj="${t.id}:50">+50</button><button data-adj="${t.id}:100">+100</button></div>` : ''}
+      ${host ? `<div class="adj"><button data-adj="${t.id}:-500">−500</button><button data-adj="${t.id}:-100">−100</button><button data-adj="${t.id}:100">+100</button><button data-adj="${t.id}:500">+500</button></div>
+      <div class="adjcustom"><input type="number" placeholder="± amount" data-adjin="${t.id}"><button data-adjgo="${t.id}">Apply</button></div>` : ''}
     </div>`).join('') + '</div>';
 }
 function bindAdjust(){
   app.querySelectorAll('[data-adj]').forEach(b => b.onclick = async () => {
     const [teamId, delta] = b.dataset.adj.split(':');
     await api('/api/host/adjust', { teamId, delta: +delta }, store.admin).catch(e=>alert(e.message));
+  });
+  app.querySelectorAll('[data-adjgo]').forEach(b => b.onclick = async () => {
+    const inp = app.querySelector(`[data-adjin="${b.dataset.adjgo}"]`);
+    const delta = inp ? +inp.value : 0;
+    if (!delta) { alert('Enter an amount first (e.g. 300 or -300)'); return; }
+    await api('/api/host/adjust', { teamId: b.dataset.adjgo, delta }, store.admin).catch(e=>alert(e.message));
   });
 }
 function drawQR(el, text){
@@ -459,14 +477,15 @@ function renderHost(){
       <div class="qrbox" id="h_qr"></div>
       <p class="muted">Scan the QR code, or open <b>${esc(joinURL())}</b> and enter the code.<br>Fill in your name, then create or join a team.</p>
       </div>
-      <h3 style="margin:16px 0 6px">Teams (${S.teams.length}) ${S.audienceMode ? '· Audience: ' + S.audienceCount : ''}</h3>
+      <h3 style="margin:16px 0 6px">Teams (${S.teams.length})</h3>
       ${scoreboardHTML(false)}
       <button class="big" id="h_begin" ${S.teams.length? '' : 'disabled'}>▶ Start the Game</button>
       ${S.teams.length? '' : '<p class="muted center">Waiting for at least one team…</p>'}`;
   } else if (S.phase === 'board') {
     const tpl = S.template;
     const cols = tpl.groups.length;
-    body = `<h3 class="center gold" style="margin-bottom:10px">Pick a question</h3>
+    body = `<div class="hostwrap"><div class="hostmain">
+      <h3 class="center gold" style="margin-bottom:10px">Pick a question</h3>
       <div class="board" style="grid-template-columns:repeat(${cols},1fr)">
       ${tpl.groups.map(gr => `<div class="colhead">${esc(gr.title)}</div>`).join('')}
       ${(() => { const maxRows = Math.max(...tpl.groups.map(g=>g.questions.length)); let cells='';
@@ -477,17 +496,17 @@ function renderHost(){
           cells += used ? `<div class="tile used">${q.points}</div>`
                          : `<div class="tile" data-open="${q.id}">${q.points}${r===0?`<span class="rem">${left} left in group</span>`:''}</div>`; }
         return cells; })()}
-      </div>
-      ${scoreboardHTML(true)}
+      </div></div>
+      <div class="hostside">${scoreboardHTML(true)}
       <div class="card plain">
         <h3 class="gold">FINAL JEOPARDY — worth <span id="fj_val">${S.finalPoints}</span> points</h3>
         <div class="row" style="margin-top:8px">
-          <input type="number" id="fj_points" value="${S.finalPoints}" style="flex:0 0 160px">
-          <button class="secondary" id="fj_set">Set Points</button>
-          <button id="fj_start">Start Final Jeopardy →</button>
+          <input type="number" id="fj_points" value="${S.finalPoints}" style="flex:0 0 110px">
+          <button class="secondary" id="fj_set">Set</button>
+          <button id="fj_start">Start Final →</button>
         </div>
-        <p class="small muted" style="margin-top:8px">Category: ${esc(tpl.final.category)} · You can change the points at any time, even mid-game.</p>
-      </div>`;
+        <p class="small muted" style="margin-top:8px">Category: ${esc(tpl.final.category)}${tpl.final.hostScored ? ' · Host-scored (answered offline)' : ''} · Points can change any time.</p>
+      </div></div></div>`;
   } else if (S.phase === 'question' && S.current) {
     const c = S.current;
     const winner = c.buzzWinnerTeamId ? S.teams.find(t=>t.id===c.buzzWinnerTeamId) : null;
@@ -503,7 +522,11 @@ function renderHost(){
       phaseUI = `<p class="center" style="font-size:20px"><b class="gold">${esc(winner ? winner.name : '')}</b> is answering${secsLeft!==null ? ` — <b><span class="js-cd" data-end="${c.answerDeadline}">${secsLeft}</span>s</b> left` : ''}…</p>` +
         (c.answerDeadline ? `<div class="timerbar"><i class="js-tfill" data-end="${c.answerDeadline}" data-total="${S.answerSeconds || 15}"></i></div>` : '') +
         (c.type === 'open' && c.answer ? `<p class="center"><button class="secondary" id="h_showans">👁 Show correct answer (for your judging)</button><span id="h_ans" class="hidden" style="font-size:20px">Correct answer: <b class="gold">${esc(c.answer)}</b></span></p>` : '') +
-        (S.template.settings.answerMode === 'oral' || c.type === 'open'
+        (c.hostJudge
+          ? `<p class="center" style="font-size:19px">${c.submission ? `📱 Captain picked: <b class="gold">${'ABCD'[c.submission.choiceIndex] || ''}</b> — your call:` : 'Captain is picking an answer on their phone — judge when ready:'}</p>
+             <div class="row"><button id="h_judge_ok" style="background:linear-gradient(180deg,#5ee79a,#1faf5f);box-shadow:0 3px 0 #0d6e3a">✓ Correct</button>
+             <button id="h_judge_no" class="danger">✗ Wrong</button></div>`
+          : S.template.settings.answerMode === 'oral' || c.type === 'open'
           ? `<div class="row"><button id="h_judge_ok" style="background:linear-gradient(180deg,#5ee79a,#1faf5f);box-shadow:0 3px 0 #0d6e3a">✓ Correct</button>
              <button id="h_judge_no" class="danger">✗ Wrong</button></div>`
           : '<p class="center muted">The captain is picking an answer on their phone.</p>');
@@ -513,26 +536,19 @@ function renderHost(){
         <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>
         <button class="big" id="h_backboard" style="margin-top:10px">← Back to the Board</button>`;
     }
-    const votes = c.votes || {};
-    const totalVotes = Object.values(votes).reduce((a,b)=>a+b,0);
-    body = `<div class="card">
+    body = `<div class="hostwrap"><div class="hostmain"><div class="card">
       <div class="center"><span class="pill">${esc(c.groupTitle)} · ${c.points} points</span></div>
       <div class="qstem">${esc(c.stem)}</div>
       ${c.image ? `<img class="qimg" src="${c.image}">` : ''}
       ${phaseUI}
-      ${c.options && c.options.length ? `<div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && i===c.correctIndex ? 'correct':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && i===c.correctIndex ? ' ✓':''}</div>`).join('')}</div>` : ''}
-      ${S.audienceMode && c.options && c.options.length ? `<div style="margin-top:16px"><div class="topbar"><h3>Audience votes (${totalVotes})</h3>
-        <button class="secondary" id="h_audtoggle">${S.showAudienceResults ? 'Hide from players' : 'Show results'}</button></div>
-        ${c.options.map((op, i) => { const v = votes[i]||0; const pct = totalVotes ? Math.round(v/totalVotes*100) : 0;
-          return `<div style="margin:6px 0"><div class="small">${'ABCD'[i]}. ${esc(op)} — ${v} (${pct}%)</div><div class="votebar"><i style="width:${pct}%"></i></div></div>`; }).join('')}
-        </div>` : ''}
+      ${c.options && c.options.length ? `<div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? 'correct':''} ${c.submission && c.submission.choiceIndex===i ? 'picked':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? ' ✓':''}${c.submission && c.submission.choiceIndex===i ? ' 📱' : ''}</div>`).join('')}</div>` : ''}
       <div class="row" style="margin-top:16px"><button class="danger" id="h_skip">⏭ Skip Question</button></div>
-    </div>
-    ${scoreboardHTML(true)}`;
+    </div></div>
+    <div class="hostside">${scoreboardHTML(true)}</div></div>`;
   } else if (S.phase === 'final_answer' || S.phase === 'final_judge') {
     const f = S.final;
     const secsLeft = S.phase === 'final_answer' ? Math.max(0, Math.ceil(((S.finalDeadline||now()) - now())/1000)) : 0;
-    body = `<div class="card center">
+    body = `<div class="hostwrap"><div class="hostmain"><div class="card center">
       <h2 class="gold">FINAL JEOPARDY</h2>
       <p class="muted">Category: ${esc(f.category)} · Worth <b class="gold">${S.finalPoints}</b> points</p>
       <div class="qstem">${esc(f.question)}</div>
@@ -540,14 +556,15 @@ function renderHost(){
         <div class="timerbar"><i class="js-tfill" data-end="${S.finalDeadline || ''}" data-total="${S.finalSeconds || 30}"></i></div>
         <p class="muted">${S.teams.filter(t=>f.submissions[t.id]!==undefined).length} of ${S.teams.length} teams have answered</p>
         <button class="big" id="h_tojudge">Close Answers &amp; Judge →</button>`
-      : `<p class="muted">Correct answer: <b class="gold">${esc(f.answer)}</b> — mark each team:</p>
+      : `${f.hostScored ? '<p class="muted">Teams answered offline — mark each team:</p>' : `<p class="muted">Correct answer: <b class="gold">${esc(f.answer)}</b> — mark each team:</p>`}
         ${S.teams.map(t => { const sub = f.submissions[t.id]; const judged = f.judged[t.id];
-          return `<div class="listitem"><div style="text-align:left"><b>${esc(t.name)}</b> (${t.score})<br>
-            <span class="muted">Answer:</span> ${sub ? esc(sub) : '<i class="muted">no answer</i>'}</div>
+          return `<div class="listitem"><div style="text-align:left"><b>${esc(t.name)}</b> (${t.score})${f.hostScored ? '' : `<br>
+            <span class="muted">Answer:</span> ${sub ? esc(sub) : '<i class="muted">no answer</i>'}`}</div>
             ${judged === undefined ? `<span class="row" style="flex:0 0 auto"><button data-fj="${t.id}:1">✓ +${S.finalPoints}</button><button class="danger" data-fj="${t.id}:0">✗ −${S.finalPoints}</button></span>`
               : `<b class="${judged ? 'gold' : ''}" style="color:${judged ? 'var(--ok)' : 'var(--danger)'}">${judged ? '✓ Correct' : '✗ Wrong'}</b>`}</div>`; }).join('')}
         <button class="big" id="h_finish" style="margin-top:12px">🏆 Finish &amp; Show Champion</button>`}
-    </div>${scoreboardHTML(true)}`;
+    </div></div>
+    <div class="hostside">${scoreboardHTML(true)}</div></div>`;
   } else if (S.phase === 'finished') {
     const standings = [...S.teams].sort((a,b)=>b.score-a.score);
     const champ = standings[0];
@@ -575,7 +592,6 @@ function renderHost(){
   const bb = $('#h_backboard'); if (bb) bb.onclick = () => api('/api/host/backToBoard', {}, store.admin);
   const ob = $('#h_openbuzz'); if (ob) ob.onclick = () => api('/api/host/openBuzz', {}, store.admin).catch(e=>alert(e.message));
   const sa = $('#h_showans'); if (sa) sa.onclick = () => { sa.classList.add('hidden'); const a = $('#h_ans'); if (a) a.classList.remove('hidden'); };
-  const at = $('#h_audtoggle'); if (at) at.onclick = () => api('/api/host/toggleAudienceResults', { show: !S.showAudienceResults }, store.admin);
   const tj = $('#h_tojudge'); if (tj) tj.onclick = () => api('/api/host/finalJudgePhase', {}, store.admin);
   app.querySelectorAll('[data-fj]').forEach(b => b.onclick = async () => { const [teamId, ok] = b.dataset.fj.split(':'); await api('/api/host/judgeFinal', { teamId, correct: ok==='1' }, store.admin).catch(e=>alert(e.message)); });
   const fin = $('#h_finish'); if (fin) fin.onclick = () => api('/api/host/finish', {}, store.admin);
@@ -587,7 +603,7 @@ function renderPlayer(){
   const me = S.me;
   if (!me) { app.innerHTML = '<div class="card center"><h3>Reconnecting…</h3><p class="muted">If this persists, rejoin with your name and choose Replace.</p><button onclick="localStorage.removeItem(\'j_player\');location.reload()">Rejoin</button></div>'; return; }
   const myTeam = me.teamId ? S.teams.find(t=>t.id===me.teamId) : null;
-  let body = `<div class="topbar"><span class="pill">${esc(me.name)}${me.role==='audience' ? ' · Audience' : myTeam ? ' · ' + esc(myTeam.name) + (me.isCaptain ? ' (Captain)' : '') : ''}</span>
+  let body = `<div class="topbar"><span class="pill">${esc(me.name)}${myTeam ? ' · ' + esc(myTeam.name) + (me.isCaptain ? ' (Captain)' : '') : ''}</span>
     <span class="clock js-clock">⏱ ${elapsedStr()}</span></div>`;
   body += scoreboardHTML(false);
   if (S.phase === 'lobby') {
@@ -598,12 +614,7 @@ function renderPlayer(){
   } else if (S.phase === 'question' && S.current) {
     const c = S.current;
     const locked = c.lockedTeamIds.includes(me.teamId);
-    if (me.role === 'audience') {
-      body += `<div class="card center"><h3 class="gold">Audience Vote</h3>
-        ${c.options ? c.options.map((op,i)=>`<button class="opt ${c.myVote===i?'picked':''}" data-vote="${i}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}</button>`).join('')
-          : '<p class="muted">Voting opens with the question…</p>'}
-        ${c.votes ? '<p class="muted" style="margin-top:10px">Live results are on the big screen.</p>' : ''}</div>`;
-    } else if (c.phase === 'waiting') {
+    if (c.phase === 'waiting') {
       body += `<div class="card center"><h3 class="gold">Question is open</h3><p class="muted">${c.lastResult === 'wrong-continue' ? 'That answer was wrong — the host will reopen buzzing for the remaining teams.' : 'Listen to the question — the host will open buzzing when ready…'}</p>
         ${me.isCaptain ? '<p>⭐ Captains: get ready to buzz.</p>' : ''}</div>`;
     } else if (c.phase === 'buzz') {
@@ -614,7 +625,7 @@ function renderPlayer(){
       const mine = c.buzzWinnerTeamId === me.teamId;
       if (!mine) body += `<div class="card center"><h3>${esc((S.teams.find(t=>t.id===c.buzzWinnerTeamId)||{}).name || 'Another team')} is answering…</h3></div>`;
       else if (!me.isCaptain) body += `<div class="card center"><h3>Your team got it!</h3><p class="muted">Your captain is answering.</p></div>`;
-      else if (S.template && false) { /* placeholder */ }
+      else if (c.hostJudge && c.myPick != null) body += `<div class="card center"><h3 class="gold">You picked ${'ABCD'[c.myPick] || ''} ✓</h3><p class="muted">Waiting for the host to judge…</p></div>`;
       else if (c.options) body += `<div class="card"><h3 class="center gold">Your answer? ${c.answerDeadline ? '(<span class="js-cd" data-end="' + c.answerDeadline + '">' + Math.max(0, Math.ceil((c.answerDeadline-now())/1000)) + '</span>s)' : ''}</h3>
         ${c.answerDeadline ? '<div class="timerbar"><i class="js-tfill" data-end="' + c.answerDeadline + '" data-total="' + (S.answerSeconds || 15) + '"></i></div>' : ''}
         <div class="opts">${c.options.map((op,i)=>`<button class="opt" data-ans="${i}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}</button>`).join('')}</div></div>`;
@@ -626,8 +637,7 @@ function renderPlayer(){
         ${c.revealedAnswer ? `<p style="font-size:20px">Correct answer: <b class="gold">${esc(c.revealedAnswer)}</b></p>` : '<p class="muted">The correct answer is on the big screen.</p>'}</div>`;
     }
   } else if (S.phase === 'final_answer') {
-    if (me.role === 'audience') body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Watch the big screen!</p></div>`;
-    else if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer.</p></div>`;
+    if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer.</p></div>`;
     else body += `<div class="card"><h3 class="center gold">FINAL JEOPARDY — ${S.finalPoints} points</h3>
       <p class="center muted">Read the question on the big screen. ${S.finalDeadline ? '<span class="js-cd" data-end="' + S.finalDeadline + '">' + Math.max(0, Math.ceil((S.finalDeadline-now())/1000)) + '</span>s left' : ''}</p>
       ${S.finalDeadline ? '<div class="timerbar"><i class="js-tfill" data-end="' + S.finalDeadline + '" data-total="' + (S.finalSeconds || 30) + '"></i></div>' : ''}
@@ -646,7 +656,6 @@ function renderPlayer(){
   app.innerHTML = body;
   const bz = $('#p_buzz'); if (bz) bz.onclick = async () => { bz.disabled = true; try { await api('/api/player/buzz', {}, store.player); } catch(e){ /* too early / locked — state will update */ } };
   app.querySelectorAll('[data-ans]').forEach(b => b.onclick = async () => { await api('/api/player/answer', { choiceIndex: +b.dataset.ans }, store.player).catch(()=>{}); });
-  app.querySelectorAll('[data-vote]').forEach(b => b.onclick = async () => { await api('/api/player/vote', { choiceIndex: +b.dataset.vote }, store.player).catch(()=>{}); });
   const fg = $('#p_final_go'); if (fg) fg.onclick = async () => { await api('/api/player/finalAnswer', { text: $('#p_final').value }, store.player).catch(e=>alert(e.message)); };
 }
 
