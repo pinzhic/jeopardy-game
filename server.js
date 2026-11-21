@@ -25,7 +25,7 @@ function sampleTemplate() {
   const q = (type, points, stem, options, correctIndex) => ({ id: uid(), type, points, stem, image: '', options, correctIndex });
   return {
     id: uid(), name: 'Tech & AI Night',
-    settings: { answerMode: 'phone', deduction: 'full', continueAfterWrong: true, answerSeconds: 10, audienceMode: true, finalSeconds: 30 },
+    settings: { answerMode: 'phone', deduction: 'full', continueAfterWrong: true, answerSeconds: 10, finalSeconds: 30 },
     groups: [
       { id: uid(), title: 'AI versus Human', questions: [
         q('tf', 100, '"The moon tonight is a silver coin hung in a velvet sky." — AI or Human? (True = AI-generated, False = Human-written)', ['AI-generated', 'Human-written'], 1),
@@ -122,7 +122,7 @@ function tick() {
   let dirty = false;
   const cq = g.current;
   if (cq) {
-    if (cq.phase === 'answer' && cq.answerDeadline && now > cq.answerDeadline) {
+    if (cq.phase === 'answer' && cq.answerDeadline && !cq.submission && now > cq.answerDeadline) {
       const loser = teamById(g, cq.buzzWinnerTeamId);
       if (loser) { applyDeduction(g, tpl, loser, cq.q.points); cq.lockedTeamIds.push(loser.id); }
       cq.timedOut = true;
@@ -142,14 +142,6 @@ function publicTeams(g) {
   return g.teams.map(t => ({ id: t.id, name: t.name, score: t.score, captainId: t.captainId,
     members: g.players.filter(p => p.teamId === t.id).map(p => ({ id: p.id, name: p.name })) }));
 }
-function voteCounts(g) {
-  const counts = {};
-  if (g.current) for (const pid of Object.keys(g.current.votes || {})) {
-    const v = g.current.votes[pid]; counts[v] = (counts[v] || 0) + 1;
-  }
-  return counts;
-}
-
 function stateFor(client) {
   const g = currentGame();
   const base = { serverNow: Date.now(), gameExists: !!g };
@@ -159,9 +151,6 @@ function stateFor(client) {
   base.finalSeconds = g.templateSnapshot.settings.finalSeconds;
   base.finalDeadline = g.finalDeadline;
   base.teams = publicTeams(g);
-  base.audienceCount = g.players.filter(p => p.role === 'audience').length;
-  base.audienceMode = g.templateSnapshot.settings.audienceMode;
-  base.showAudienceResults = g.showAudienceResults;
 
   if (client.kind === 'admin') {
     base.template = g.templateSnapshot;
@@ -174,12 +163,12 @@ function stateFor(client) {
       stem: g.current.q.stem, image: g.current.q.image, type: g.current.q.type,
       options: g.current.q.options, correctIndex: g.current.q.correctIndex, points: g.current.q.points,
       answer: g.current.q.answer || null,
-      votes: voteCounts(g),
+      hostJudge: !!g.current.q.hostJudge, submission: g.current.submission || null,
     } : null;
     base.finalPoints = g.finalPoints;
     base.final = g.phase.startsWith('final') || g.phase === 'finished' ? {
       category: g.templateSnapshot.final.category, question: g.templateSnapshot.final.question,
-      answer: g.templateSnapshot.final.answer,
+      answer: g.templateSnapshot.final.answer, hostScored: !!g.templateSnapshot.final.hostScored,
       submissions: g.finalSubmissions, judged: g.finalJudged,
     } : null;
     return base;
@@ -197,11 +186,11 @@ function stateFor(client) {
       phase: cq.phase, phaseEndsAt: cq.phaseEndsAt, answerDeadline: cq.answerDeadline,
       buzzWinnerTeamId: cq.buzzWinnerTeamId, lockedTeamIds: cq.lockedTeamIds,
       lastResult: cq.lastResult, timedOut: cq.timedOut, points: cq.q.points, type: cq.q.type,
-      // options only for the answering captain (phone-answer mode only), and for audience while voting is open; open questions never expose options
-      options: cq.q.type === 'open' ? null : ((isWinningCaptain && cq.phase === 'answer' && g.templateSnapshot.settings.answerMode === 'phone') || (me && me.role === 'audience' && (cq.phase === 'buzz' || cq.phase === 'answer' || cq.phase === 'waiting')) ? cq.q.options : null),
+      // options only for the answering captain (phone-answer mode, or host-judged picks); open questions never expose options
+      options: cq.q.type === 'open' ? null : (isWinningCaptain && cq.phase === 'answer' && (g.templateSnapshot.settings.answerMode === 'phone' || cq.q.hostJudge) ? cq.q.options : null),
       revealedAnswer: cq.phase === 'reveal' && cq.q.type === 'open' ? (cq.q.answer || '') : null,
-      myVote: me ? (cq.votes || {})[me.id] : undefined,
-      votes: g.showAudienceResults ? voteCounts(g) : null,
+      hostJudge: !!cq.q.hostJudge,
+      myPick: cq.submission && me && cq.submission.teamId === me.teamId ? cq.submission.choiceIndex : null,
       myFinalSubmitted: undefined,
     };
   }
@@ -277,7 +266,7 @@ const routes = {
       code: newCode(), phase: 'lobby', templateSnapshot: JSON.parse(JSON.stringify(tpl)),
       teams: [], players: [], usedQuestionIds: [], current: null,
       startedAt: null, finalPoints: tpl.final.points || 1000,
-      finalSubmissions: {}, finalJudged: {}, showAudienceResults: false, finalDeadline: null,
+      finalSubmissions: {}, finalJudged: {}, finalDeadline: null,
     };
     changed(); send(res, 200, { code: DB.game.code });
   },
@@ -300,7 +289,7 @@ const routes = {
     if (g.usedQuestionIds.includes(b.questionId)) return send(res, 400, { error: 'already used' });
     g.phase = 'question';
     g.current = { q: found.q, groupTitle: found.group.title, phase: 'waiting', phaseEndsAt: null,
-      buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, votes: {} };
+      buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, submission: null };
     changed(); send(res, 200, { ok: true });
   },
   'POST /api/host/openBuzz': (req, res) => {
@@ -349,17 +338,17 @@ const routes = {
     const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
     g.finalPoints = Number(b.points) || 0; changed(); send(res, 200, { ok: true });
   },
-  'POST /api/host/toggleAudienceResults': async (req, res) => {
-    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
-    const b = await readBody(req);
-    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
-    g.showAudienceResults = !!b.show; changed(); send(res, 200, { ok: true });
-  },
   'POST /api/host/startFinal': (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
     const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
-    g.current = null; g.phase = 'final_answer';
-    g.finalDeadline = Date.now() + (g.templateSnapshot.settings.finalSeconds || 30) * 1000;
+    g.current = null;
+    if (g.templateSnapshot.final.hostScored) {
+      // answered offline (PPT / paper): no phone submissions — go straight to host judging
+      g.phase = 'final_judge'; g.finalDeadline = null;
+    } else {
+      g.phase = 'final_answer';
+      g.finalDeadline = Date.now() + (g.templateSnapshot.settings.finalSeconds || 30) * 1000;
+    }
     changed(); send(res, 200, { ok: true });
   },
   'POST /api/host/finalJudgePhase': (req, res) => {
@@ -386,7 +375,7 @@ const routes = {
     const b = await readBody(req);
     const g = currentGame();
     if (!g || g.code !== String(b.code || '').toUpperCase().trim()) return send(res, 404, { error: 'Game not found. Check the code.' });
-    send(res, 200, { code: g.code, phase: g.phase, audienceMode: g.templateSnapshot.settings.audienceMode,
+    send(res, 200, { code: g.code, phase: g.phase,
       teams: g.teams.map(t => ({ id: t.id, name: t.name, members: g.players.filter(p => p.teamId === t.id).length })) });
   },
   'POST /api/game/join': async (req, res) => {
@@ -405,10 +394,7 @@ const routes = {
     }
     if (g.phase !== 'lobby') return send(res, 403, { error: 'This game has already started — joining is closed.' });
     let player;
-    if (b.mode === 'audience') {
-      if (!g.templateSnapshot.settings.audienceMode) return send(res, 400, { error: 'Audience mode is off for this game' });
-      player = { id: uid(), name, role: 'audience', teamId: null };
-    } else if (b.mode === 'create') {
+    if (b.mode === 'create') {
       const teamName = String(b.teamName || '').trim();
       if (!teamName) return send(res, 400, { error: 'Team name required' });
       if (g.teams.find(t => t.name.toLowerCase() === teamName.toLowerCase())) return send(res, 400, { error: 'That team name is taken' });
@@ -420,7 +406,7 @@ const routes = {
       const team = teamById(g, b.teamId);
       if (!team) return send(res, 404, { error: 'Team not found' });
       player = { id: uid(), name, role: 'player', teamId: team.id };
-    } else return send(res, 400, { error: 'mode must be create, join, or audience' });
+    } else return send(res, 400, { error: 'mode must be create or join' });
     g.players.push(player);
     const t = token(); sessions.set(t, { kind: 'player', playerId: player.id, gameCode: g.code });
     changed(); send(res, 200, { status: 'joined', token: t, playerId: player.id });
@@ -447,20 +433,20 @@ const routes = {
     const cq = g.current;
     if (cq.phase !== 'answer' || cq.buzzWinnerTeamId !== me.teamId) return send(res, 400, { error: 'Not your turn to answer' });
     const team = teamById(g, me.teamId);
+    if (cq.q.hostJudge) {
+      // host-judged pick (e.g. PPT rounds): record the captain's A/B/C, never auto-score — the host judges
+      const ci = Number(b.choiceIndex);
+      if (!(ci >= 0 && ci < cq.q.options.length)) return send(res, 400, { error: 'invalid choice' });
+      if (cq.submission) return send(res, 400, { error: 'answer already submitted' });
+      cq.submission = { teamId: me.teamId, choiceIndex: ci };
+      cq.answerDeadline = null;
+      changed(); return send(res, 200, { ok: true, pending: true });
+    }
     if (g.templateSnapshot.settings.answerMode !== 'phone') return send(res, 400, { error: 'This game uses oral answers — the host judges' });
     const correct = Number(b.choiceIndex) === cq.q.correctIndex;
     if (correct) resolveCorrect(g, cq);
     else { applyDeduction(g, g.templateSnapshot, team, cq.q.points); cq.lockedTeamIds.push(team.id); resolveWrong(g, g.templateSnapshot, cq); }
     changed(); send(res, 200, { ok: true, correct });
-  },
-  'POST /api/player/vote': async (req, res) => {
-    const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
-    const b = await readBody(req);
-    const g = currentGame(); if (!g || !g.current) return send(res, 404, { error: 'no question' });
-    const me = playerById(g, s.playerId); if (!me || me.role !== 'audience') return send(res, 403, { error: 'audience only' });
-    g.current.votes = g.current.votes || {};
-    g.current.votes[me.id] = Number(b.choiceIndex);
-    changed(); send(res, 200, { ok: true });
   },
   'POST /api/player/finalAnswer': async (req, res) => {
     const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
