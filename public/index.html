@@ -540,7 +540,9 @@ function renderHost(){
     } else if (c.phase === 'reveal') {
       const ansText = c.type === 'open' ? (c.answer || '') : c.options[c.correctIndex];
       phaseUI = `<div class="center" style="font-size:20px">${c.lastResult === 'correct' ? '✅ <b class="gold">' + esc(winner ? winner.name : '') + '</b> got it right! +' + c.points : '❌ Nobody got it.'}</div>
-        <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>`;
+        ${c.hostJudge
+          ? `<p class="center" style="font-size:22px;margin-top:8px">${c.submission ? `Their pick: <b class="gold">${'ABCD'[c.submission.choiceIndex] || ''}</b> — ` : ''}${c.lastResult === 'correct' ? '✅ Correct' : '❌ Wrong'}</p>`
+          : `<p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>`}`;
     }
     body = `<div class="hostwrap"><div class="hostmain"><div class="card">
       <div class="center"><span class="pill">${esc(c.groupTitle)} · ${c.points} points</span></div>
@@ -639,7 +641,7 @@ function renderPlayer(){
     } else if (c.phase === 'reveal') {
       const winnerName = (S.teams.find(t=>t.id===c.buzzWinnerTeamId)||{}).name;
       body += `<div class="card center">${c.lastResult==='correct' ? `<h3>✅ ${esc(winnerName||'')} got it right! +${c.points}</h3>` : '<h3>❌ That question is closed.</h3>'}
-        ${c.revealedAnswer ? `<p style="font-size:20px">Correct answer: <b class="gold">${esc(c.revealedAnswer)}</b></p>` : '<p class="muted">The correct answer is on the big screen.</p>'}</div>`;
+        ${c.revealedAnswer ? `<p style="font-size:20px">Correct answer: <b class="gold">${esc(c.revealedAnswer)}</b></p>` : c.hostJudge ? '<p class="muted">The host judged this one from the slides.</p>' : '<p class="muted">The correct answer is on the big screen.</p>'}</div>`;
     }
   } else if (S.phase === 'final_answer') {
     if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer.</p></div>`;
