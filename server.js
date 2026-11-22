@@ -154,10 +154,25 @@ function tick() {
   const cq = g.current;
   if (cq) {
     if (cq.phase === 'answer' && cq.answerDeadline && !cq.submission && now > cq.answerDeadline) {
+      // no answer in time: deduct, lock that team out of this question, and
+      // buzzing reopens automatically after a 5-second countdown — the
+      // answer is NOT revealed while other teams can still try
       const loser = teamById(g, cq.buzzWinnerTeamId);
       if (loser) { applyDeduction(g, tpl, loser, cq.q.points, cq); cq.lockedTeamIds.push(loser.id); }
       cq.timedOut = true;
-      resolveWrong(g, tpl, cq);
+      cq.lastResult = 'timeout';
+      cq.lastTimeoutTeamId = loser ? loser.id : null;
+      cq.buzzWinnerTeamId = null;
+      cq.answerDeadline = null;
+      cq.phase = 'rebuzz';
+      cq.phaseEndsAt = now + 5000;
+      dirty = true;
+    }
+    if (cq.phase === 'rebuzz' && cq.phaseEndsAt && now > cq.phaseEndsAt) {
+      const eligible = g.teams.filter(t => !cq.lockedTeamIds.includes(t.id));
+      cq.phaseEndsAt = null;
+      if (eligible.length > 0) { cq.phase = 'buzz'; cq.timedOut = false; }
+      else { cq.phase = 'reveal'; cq.lastResult = 'wrong-final'; }
       dirty = true;
     }
   }
@@ -196,6 +211,7 @@ function stateFor(client) {
       options: g.current.q.options, correctIndex: g.current.q.correctIndex, points: g.current.q.points,
       answer: g.current.q.answer || null,
       hostJudge: !!g.current.q.hostJudge, submission: g.current.submission || null,
+      lastTimeoutTeamId: g.current.lastTimeoutTeamId || null,
     } : null;
     base.finalPoints = g.finalPoints;
     base.final = g.phase.startsWith('final') || g.phase === 'finished' ? {
@@ -226,6 +242,7 @@ function stateFor(client) {
       revealedAnswer: cq.phase === 'reveal' && cq.q.type === 'open' ? (cq.q.answer || '') : null,
       hostJudge: !!cq.q.hostJudge,
       myPick: cq.submission && me && cq.submission.teamId === me.teamId ? cq.submission.choiceIndex : null,
+      lastTimeoutTeamId: cq.lastTimeoutTeamId || null,
       myFinalSubmitted: undefined,
     };
   }
@@ -328,6 +345,12 @@ const routes = {
     const found = questionById(g.templateSnapshot, b.questionId);
     if (!found) return send(res, 404, { error: 'question not found' });
     if (g.usedQuestionIds.includes(b.questionId)) return send(res, 400, { error: 'already used' });
+    // categories are played low to high: every lower-value question in this
+    // category must be finished before a higher one can open
+    const ordered = [...found.group.questions].sort((a, b) => a.points - b.points);
+    const myIdx = ordered.findIndex(x => x.id === b.questionId);
+    const blocker = ordered.slice(0, myIdx).find(x => !g.usedQuestionIds.includes(x.id));
+    if (blocker) return send(res, 400, { error: `Play this category in order — the ${blocker.points}-point question comes first.` });
     g.phase = 'question';
     g.current = { q: found.q, groupTitle: found.group.title, phase: 'waiting', phaseEndsAt: null,
       buzzWinnerTeamId: null, lockedTeamIds: [], lastResult: null, timedOut: false, answerDeadline: null, submission: null };
