@@ -308,6 +308,10 @@ function renderAdmin(){
   ${S.gameExists ? `<div class="card" style="margin-bottom:14px"><h3 class="gold">A game is ${S.phase === 'finished' ? 'finished' : 'in progress'} (code ${esc(S.code)})</h3>
     <div class="row" style="margin-top:10px"><button id="ad_goto">Open Host Screen →</button>
     <button class="danger" id="ad_end">End Game</button></div></div>` : ''}
+  <div class="card plain" style="margin-bottom:14px">
+    <label>🏷️ Game title / theme — shown on the host screen and on every player's phone. Set it before starting a game (optional; defaults to the template name).</label>
+    <input id="ad_title" placeholder="e.g. Martech Team Game Night 🎉" value="${esc(localStorage.getItem('j_gametitle') || '')}">
+  </div>
   <div class="card plain">
     <div class="topbar"><h3>Game Templates</h3><button id="ad_new">+ New Template</button></div>
     ${templatesCache.map(t => `<div class="listitem"><div><b>${esc(t.name)}</b>
@@ -322,7 +326,10 @@ function renderAdmin(){
   app.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { editorTpl = JSON.parse(JSON.stringify(templatesCache.find(t=>t.id===b.dataset.edit))); render(); });
   app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { if (confirm('Delete this template?')) { await fetch('/api/admin/templates', { method:'DELETE', headers:{'Content-Type':'application/json', Authorization:'Bearer '+store.admin}, body: JSON.stringify({ id: b.dataset.del }) }); loadTemplates(); } });
   app.querySelectorAll('[data-start]').forEach(b => b.onclick = async () => {
-    try { await api('/api/host/start', { templateId: b.dataset.start }, store.admin); view='host'; } catch(e){ alert(e.message); }
+    const titleEl = $('#ad_title');
+    const title = titleEl ? titleEl.value.trim() : '';
+    try { localStorage.setItem('j_gametitle', title); } catch(e){}
+    try { await api('/api/host/start', { templateId: b.dataset.start, title }, store.admin); view='host'; } catch(e){ alert(e.message); }
   });
   const gotoBtn = $('#ad_goto'); if (gotoBtn) gotoBtn.onclick = () => { view='host'; render(); };
   const endBtn = $('#ad_end'); if (endBtn) endBtn.onclick = async () => { if (confirm('End the current game for everyone?')) { await api('/api/host/end', {}, store.admin); render(); } };
@@ -466,12 +473,13 @@ function joinURL(){ return location.origin + '/?code=' + S.code; }
 function renderHost(){
   if (!S.gameExists) { app.innerHTML = '<div class="card center"><h3>No active game</h3><p class="muted">Start one from the console.</p><button id="h_back">← Host Console</button></div>';
     $('#h_back').onclick = () => { view='admin'; loadTemplates(); }; return; }
-  const top = `<div class="topbar"><span class="pill">HOST · Code ${esc(S.code)}</span>
+  const top = `<div class="topbar"><span class="pill">HOST · ${esc(S.title || 'Game')} · Code ${esc(S.code)}</span>
     <span class="clock js-clock">⏱ ${elapsedStr()}</span>
     <span><button class="secondary" id="h_console">Console</button> <button class="danger" id="h_end">End Game</button></span></div>`;
   let body = '';
   if (S.phase === 'lobby') {
     body = `<div class="card center">
+      ${S.title ? `<div style="font-size:clamp(26px,4.5vw,40px);font-weight:900;color:var(--gold);line-height:1.2;margin-bottom:8px">${esc(S.title)}</div>` : ''}
       <h2 class="gold">Players — join this game!</h2>
       <div class="join-code">${esc(S.code)}</div>
       <div class="qrbox" id="h_qr"></div>
@@ -607,7 +615,7 @@ function renderPlayer(){
     <span class="clock js-clock">⏱ ${elapsedStr()}</span></div>`;
   body += scoreboardHTML(false);
   if (S.phase === 'lobby') {
-    body += `<div class="card center"><h3 class="gold">You're in!</h3><p class="muted">Waiting for the host to start… look at the big screen.</p>
+    body += `<div class="card center">${S.title ? `<h3 class="gold" style="font-size:24px">${esc(S.title)}</h3>` : ''}<h3 class="gold">You're in!</h3><p class="muted">Waiting for the host to start… look at the big screen.</p>
       ${me.isCaptain ? '<p>⭐ You are the team captain — your phone is the buzzer.</p>' : ''}</div>`;
   } else if (S.phase === 'board') {
     body += `<div class="card center"><h3>The host is picking a question…</h3><p class="muted">Eyes on the big screen 👀</p></div>`;
