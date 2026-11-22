@@ -500,9 +500,8 @@ function renderHost(){
         for (let r=0;r<maxRows;r++) for (const gr of tpl.groups) { const q = gr.questions[r];
           if (!q) { cells += '<div></div>'; continue; }
           const used = S.usedQuestionIds.includes(q.id);
-          const left = gr.questions.filter(x=>!S.usedQuestionIds.includes(x.id)).length;
           cells += used ? `<div class="tile used">${q.points}</div>`
-                         : `<div class="tile" data-open="${q.id}">${q.points}${r===0?`<span class="rem">${left} left in group</span>`:''}</div>`; }
+                         : `<div class="tile" data-open="${q.id}">${q.points}</div>`; }
         return cells; })()}
       </div></div>
       <div class="hostside">${scoreboardHTML(true)}
@@ -534,15 +533,14 @@ function renderHost(){
           ? `<p class="center" style="font-size:19px">${c.submission ? `📱 Captain picked: <b class="gold">${'ABCD'[c.submission.choiceIndex] || ''}</b> — your call:` : 'Captain is picking an answer on their phone — judge when ready:'}</p>
              <div class="row"><button id="h_judge_ok" style="background:linear-gradient(180deg,#5ee79a,#1faf5f);box-shadow:0 3px 0 #0d6e3a">✓ Correct</button>
              <button id="h_judge_no" class="danger">✗ Wrong</button></div>`
-          : S.template.settings.answerMode === 'oral' || c.type === 'open'
+          : c.type === 'open'
           ? `<div class="row"><button id="h_judge_ok" style="background:linear-gradient(180deg,#5ee79a,#1faf5f);box-shadow:0 3px 0 #0d6e3a">✓ Correct</button>
              <button id="h_judge_no" class="danger">✗ Wrong</button></div>`
-          : '<p class="center muted">The captain is picking an answer on their phone.</p>');
+          : '<p class="center muted">The captain is picking an answer on their phone — it will be scored automatically.</p>');
     } else if (c.phase === 'reveal') {
       const ansText = c.type === 'open' ? (c.answer || '') : c.options[c.correctIndex];
       phaseUI = `<div class="center" style="font-size:20px">${c.lastResult === 'correct' ? '✅ <b class="gold">' + esc(winner ? winner.name : '') + '</b> got it right! +' + c.points : '❌ Nobody got it.'}</div>
-        <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>
-        <button class="big" id="h_backboard" style="margin-top:10px">← Back to the Board</button>`;
+        <p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>`;
     }
     body = `<div class="hostwrap"><div class="hostmain"><div class="card">
       <div class="center"><span class="pill">${esc(c.groupTitle)} · ${c.points} points</span></div>
@@ -550,7 +548,7 @@ function renderHost(){
       ${c.image ? `<img class="qimg" src="${c.image}">` : ''}
       ${phaseUI}
       ${c.options && c.options.length ? `<div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? 'correct':''} ${c.submission && c.submission.choiceIndex===i ? 'picked':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? ' ✓':''}${c.submission && c.submission.choiceIndex===i ? ' 📱' : ''}</div>`).join('')}</div>` : ''}
-      <div class="row" style="margin-top:16px"><button class="danger" id="h_skip">⏭ Skip Question</button></div>
+      <div class="row" style="margin-top:16px"><button class="secondary" id="h_backboard">← Back to the Board</button></div>
     </div></div>
     <div class="hostside">${scoreboardHTML(true)}</div></div>`;
   } else if (S.phase === 'final_answer' || S.phase === 'final_judge') {
@@ -596,7 +594,6 @@ function renderHost(){
   const fjStart = $('#fj_start'); if (fjStart) fjStart.onclick = async () => { if (confirm('Start Final Jeopardy now?')) await api('/api/host/startFinal', {}, store.admin).catch(e=>alert(e.message)); };
   const jok = $('#h_judge_ok'); if (jok) jok.onclick = () => api('/api/host/judge', { correct:true }, store.admin);
   const jno = $('#h_judge_no'); if (jno) jno.onclick = () => api('/api/host/judge', { correct:false }, store.admin);
-  const skip = $('#h_skip'); if (skip) skip.onclick = () => api('/api/host/skip', {}, store.admin);
   const bb = $('#h_backboard'); if (bb) bb.onclick = () => api('/api/host/backToBoard', {}, store.admin);
   const ob = $('#h_openbuzz'); if (ob) ob.onclick = () => api('/api/host/openBuzz', {}, store.admin).catch(e=>alert(e.message));
   const sa = $('#h_showans'); if (sa) sa.onclick = () => { sa.classList.add('hidden'); const a = $('#h_ans'); if (a) a.classList.remove('hidden'); };
