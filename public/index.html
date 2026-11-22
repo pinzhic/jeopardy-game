@@ -225,7 +225,7 @@ function renderHome(){
       <p class="small muted" style="margin-top:12px">Preset accounts: admin1 / admin123 · admin2 / admin123 · host1 / host123</p>
     </div>
   </div>
-  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v9</p>`;
+  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v10</p>`;
   $('#j_find').onclick = async () => {
     uiError = '';
     const code = $('#j_code').value.toUpperCase().trim();
@@ -358,7 +358,6 @@ function renderEditor(){
         <option value="half" ${st.deduction==='half'?'selected':''}>Half points</option>
         <option value="none" ${st.deduction==='none'?'selected':''}>No deduction</option></select></div>
       <div><label>Answer time limit after a buzz (seconds, 0 = none)</label><input id="ed_secs" type="number" min="0" value="${st.answerSeconds}"></div>
-      <div><label>Final Jeopardy answer time (seconds)</label><input id="ed_fsecs" type="number" min="5" value="${st.finalSeconds||30}"></div>
     </div>
     <label><input type="checkbox" id="ed_cont" style="width:auto" ${st.continueAfterWrong?'checked':''}> Choice questions: let other teams keep buzzing after a wrong answer (instead of revealing the answer right away)</label>
   </div>
@@ -428,7 +427,7 @@ function renderEditor(){
   $('#ed_save').onclick = async () => {
     t.name = $('#ed_name').value.trim() || 'Untitled';
     st.answerMode = $('#ed_mode').value; st.deduction = $('#ed_ded').value;
-    st.answerSeconds = +$('#ed_secs').value || 0; st.finalSeconds = +$('#ed_fsecs').value || 30;
+    st.answerSeconds = +$('#ed_secs').value || 0; st.finalSeconds = 0; // Final Jeopardy has no answer time limit
     st.continueAfterWrong = $('#ed_cont').checked;
     t.final = { category: $('#ed_fcat').value, question: $('#ed_fq').value, answer: $('#ed_fa').value, points: +$('#ed_fp').value || 0, hostScored: $('#ed_fhost').checked };
     for (const gr of t.groups) for (const q of gr.questions) { if (q.type==='choice') q.options = q.options.filter((o,i)=> o.trim()!=='' || i<2); if (q.type==='open') q.options = []; }
@@ -532,6 +531,15 @@ function renderHost(){
       <div class="join-code">${esc(S.code)}</div>
       <div class="qrbox" id="h_qr"></div>
       <p class="muted">Scan the QR code, or open <b>${esc(joinURL())}</b> and enter the code.<br>Fill in your name, then create or join a team.</p>
+      <div style="text-align:left;max-width:660px;margin:16px auto 6px">
+        <h3 class="center gold" style="margin-bottom:8px">📖 HOW TO PLAY</h3>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">📱 <b>The captain's phone is the team buzzer.</b> Anyone can join a team — only the captain buzzes and answers.</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">🔔 The host opens buzzing for each question — captains, buzz fast!</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">✅ Some questions are answered <b>on the captain's phone</b> (multiple choice / true–false) and scored automatically.</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">🗣️ Some questions are answered <b>out loud</b>, as the host directs — the host judges those.</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">💰 Correct answers add points; wrong answers subtract them.</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">🏁 <b>Final Jeopardy:</b> captains send their team's answer to the host on <b>Slack</b>. Then every team votes for <b>another</b> team's answer, captains report the vote counts, and the winner earns the Final points.</p>
+      </div>
       </div>
       <h3 style="margin:16px 0 6px">Teams (${S.teams.length})</h3>
       ${scoreboardHTML(false)}
@@ -619,8 +627,7 @@ function renderHost(){
       <h2 class="gold">FINAL JEOPARDY</h2>
       <p class="muted">Category: ${esc(f.category)} · Worth <b class="gold">${S.finalPoints}</b> points</p>
       <div class="qstem">${esc(f.question)}</div>
-      ${S.phase === 'final_answer' ? `<p style="font-size:20px">Captains are writing their answers… <b><span class="js-cd" data-end="${S.finalDeadline || ''}">${secsLeft}</span>s</b></p>
-        <div class="timerbar"><i class="js-tfill" data-end="${S.finalDeadline || ''}" data-total="${S.finalSeconds || 30}"></i></div>
+      ${S.phase === 'final_answer' ? `<p style="font-size:20px">Captains are writing their answers… <span class="muted">(no time limit)</span></p>
         <p class="muted">${S.teams.filter(t=>f.submissions[t.id]!==undefined).length} of ${S.teams.length} teams have answered</p>
         <button class="big" id="h_tojudge">Close Answers &amp; Judge →</button>`
       : `${f.hostScored ? '<p class="muted">Teams answered offline — mark each team:</p>' : `<p class="muted">Correct answer: <b class="gold">${esc(f.answer)}</b> — mark each team:</p>`}
@@ -730,8 +737,7 @@ function renderPlayer(){
   } else if (S.phase === 'final_answer') {
     if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer.</p></div>`;
     else body += `<div class="card"><h3 class="center gold">FINAL JEOPARDY — ${S.finalPoints} points</h3>
-      <p class="center muted">Read the question on the big screen. ${S.finalDeadline ? '<span class="js-cd" data-end="' + S.finalDeadline + '">' + Math.max(0, Math.ceil((S.finalDeadline-now())/1000)) + '</span>s left' : ''}</p>
-      ${S.finalDeadline ? '<div class="timerbar"><i class="js-tfill" data-end="' + S.finalDeadline + '" data-total="' + (S.finalSeconds || 30) + '"></i></div>' : ''}
+      <p class="center muted">Read the question on the big screen. Take your time — there's no time limit.</p>
       <label>Your team's answer</label><input id="p_final" value="${esc(S.myFinalAnswer || '')}">
       <div style="height:10px"></div><button class="big" id="p_final_go">${S.myFinalAnswer ? 'Update Answer' : 'Submit Answer'}</button>
       ${S.myFinalAnswer ? '<div class="ok-banner center">Answer submitted ✓</div>' : ''}</div>`;
