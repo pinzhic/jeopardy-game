@@ -364,7 +364,7 @@ function renderEditor(){
     <label>Question</label><textarea id="ed_fq" rows="2">${esc(t.final.question)}</textarea>
     <label>Correct answer</label><input id="ed_fa" value="${esc(t.final.answer)}">
     <label>Points (host can change this live during the game)</label><input id="ed_fp" type="number" value="${t.final.points}">
-    <label><input type="checkbox" id="ed_fhost" style="width:auto" ${t.final.hostScored?'checked':''}> Host-scored Final — teams answer offline (slides / paper), no phone answers; the host marks each team ✓/✗ for ±points</label>
+    <label><input type="checkbox" id="ed_fhost" style="width:auto" ${t.final.hostScored?'checked':''}> Peer-voting Final — captains submit their team's answer on their phones, then teams vote for other teams' answers and captains report the counts; the winner is decided by votes (no points)</label>
   </div>`;
   const groupsEl = $('#ed_groups');
   const drawGroups = () => {
@@ -470,6 +470,38 @@ function drawQR(el, text){
 }
 function joinURL(){ return location.origin + '/?code=' + S.code; }
 
+function votingFinalHostHTML(f){
+  if (S.phase === 'final_answer') {
+    return `<div class="hostwrap"><div class="hostmain"><div class="card center">
+      <h2 class="gold">FINAL JEOPARDY — Team Answers</h2>
+      <p class="muted" style="font-size:17px">Captains: write your team's answer on your phone, tap <b>Submit Answer</b>, and also send the same text to the host on <b>Slack</b>.</p>
+      <div style="text-align:left;margin-top:10px">${S.teams.map(t => `<div class="listitem"><span><b>${esc(t.name)}</b></span>${f.submissions[t.id] !== undefined ? '<b style="color:var(--ok)">✓ Submitted</b>' : '<span class="muted">waiting…</span>'}</div>`).join('')}</div>
+      <p class="muted" style="margin-top:8px">${S.teams.filter(t=>f.submissions[t.id]!==undefined).length} of ${S.teams.length} teams have submitted</p>
+      <button class="big" id="h_tovote" style="margin-top:10px">Show Answers &amp; Start Voting →</button>
+    </div></div>
+    <div class="hostside">${scoreboardHTML(true)}</div></div>`;
+  }
+  if (S.phase === 'final_vote') {
+    return `<div class="hostwrap"><div class="hostmain"><div class="card center">
+      <h2 class="gold">FINAL JEOPARDY — The Answers</h2>
+      <div style="text-align:left;margin-top:6px">${S.teams.map(t => `<div class="listitem"><div style="text-align:left"><b class="gold">${esc(t.name)}</b><br>${f.submissions[t.id] ? esc(f.submissions[t.id]) : '<i class="muted">no answer submitted</i>'}</div></div>`).join('')}</div>
+      <p class="muted" style="margin-top:10px">Teams: discuss and vote for <b>another</b> team's answer — captains report their team's votes on their phones.</p>
+      <div style="text-align:left;margin-top:6px">${S.teams.map(t => `<div class="listitem"><span><b>${esc(t.name)}</b></span>${f.reported[t.id] ? '<b style="color:var(--ok)">✓ Votes reported</b>' : '<span class="muted">captain reporting…</span>'}</div>`).join('')}</div>
+      <button class="big" id="h_closevote" style="margin-top:12px">Close Voting &amp; Show Winner</button>
+      <p class="small muted" style="margin-top:6px">The winner also appears automatically once every captain has reported. Only the winner's votes are ever shown.</p>
+    </div></div>
+    <div class="hostside">${scoreboardHTML(true)}</div></div>`;
+  }
+  const r = f.result || { winnerTeamIds: [], winnerVotes: 0, totalVotes: 0 };
+  const winners = S.teams.filter(t => r.winnerTeamIds.includes(t.id));
+  return `<div class="champ"><div class="trophy">🗳️</div>
+    <div class="muted" style="letter-spacing:3px">FINAL JEOPARDY WINNER</div>
+    ${winners.length ? `<div class="wname">${winners.map(t=>esc(t.name)).join(' & ')}</div>
+    <div style="font-size:26px"><b class="gold">${r.winnerVotes}</b> / ${r.totalVotes} votes</div>`
+    : `<div class="wname">No votes cast</div>`}
+    <button class="big" id="h_finish" style="margin-top:16px">🏆 Finish &amp; Show Champion</button></div>`;
+}
+
 function renderHost(){
   if (!S.gameExists) { app.innerHTML = '<div class="card center"><h3>No active game</h3><p class="muted">Start one from the console.</p><button id="h_back">← Host Console</button></div>';
     $('#h_back').onclick = () => { view='admin'; loadTemplates(); }; return; }
@@ -506,13 +538,16 @@ function renderHost(){
       </div></div>
       <div class="hostside">${scoreboardHTML(true)}
       <div class="card plain">
-        <h3 class="gold">FINAL JEOPARDY — worth <span id="fj_val">${S.finalPoints}</span> points</h3>
+        ${tpl.final.hostScored ? `<h3 class="gold">FINAL JEOPARDY — Team Voting Round</h3>
+        <p class="small muted" style="margin-top:6px">Captains submit their team's answer, then every team votes for other teams' answers. No points — the Final winner is decided by votes.</p>
+        <div class="row" style="margin-top:8px"><button id="fj_start">Start Final →</button></div>`
+        : `<h3 class="gold">FINAL JEOPARDY — worth <span id="fj_val">${S.finalPoints}</span> points</h3>
         <div class="row" style="margin-top:8px">
           <input type="number" id="fj_points" value="${S.finalPoints}" style="flex:0 0 110px">
           <button class="secondary" id="fj_set">Set</button>
           <button id="fj_start">Start Final →</button>
         </div>
-        <p class="small muted" style="margin-top:8px">Category: ${esc(tpl.final.category)}${tpl.final.hostScored ? ' · Host-scored (answered offline)' : ''} · Points can change any time.</p>
+        <p class="small muted" style="margin-top:8px">Category: ${esc(tpl.final.category)} · Points can change any time.</p>`}
       </div></div></div>`;
   } else if (S.phase === 'question' && S.current) {
     const c = S.current;
@@ -553,9 +588,12 @@ function renderHost(){
       <div class="row" style="margin-top:16px"><button class="secondary" id="h_backboard">← Back to the Board</button></div>
     </div></div>
     <div class="hostside">${scoreboardHTML(true)}</div></div>`;
-  } else if (S.phase === 'final_answer' || S.phase === 'final_judge') {
+  } else if (S.phase === 'final_answer' || S.phase === 'final_judge' || S.phase === 'final_vote' || S.phase === 'final_reveal') {
     const f = S.final;
     const secsLeft = S.phase === 'final_answer' ? Math.max(0, Math.ceil(((S.finalDeadline||now()) - now())/1000)) : 0;
+    if (f.hostScored) {
+      body = votingFinalHostHTML(f);
+    } else {
     body = `<div class="hostwrap"><div class="hostmain"><div class="card center">
       <h2 class="gold">FINAL JEOPARDY</h2>
       <p class="muted">Category: ${esc(f.category)} · Worth <b class="gold">${S.finalPoints}</b> points</p>
@@ -573,6 +611,7 @@ function renderHost(){
         <button class="big" id="h_finish" style="margin-top:12px">🏆 Finish &amp; Show Champion</button>`}
     </div></div>
     <div class="hostside">${scoreboardHTML(true)}</div></div>`;
+    }
   } else if (S.phase === 'finished') {
     const standings = [...S.teams].sort((a,b)=>b.score-a.score);
     const champ = standings[0];
@@ -580,6 +619,7 @@ function renderHost(){
       <div class="muted" style="letter-spacing:3px">CHAMPION</div>
       <div class="wname">${champ ? esc(champ.name) : ''}</div>
       <div style="font-size:24px">${champ ? champ.score : 0} points</div>
+      ${S.final && S.final.result && S.final.result.winnerTeamIds.length ? `<div style="font-size:19px;margin-top:6px">🗳️ Final Jeopardy winner: <b class="gold">${S.final.result.winnerTeamIds.map(id => esc((S.teams.find(t=>t.id===id)||{}).name || '')).join(' & ')}</b> (${S.final.result.winnerVotes}/${S.final.result.totalVotes} votes)</div>` : ''}
       <div style="margin-top:16px;text-align:left">${standings.map((t,i)=>`<div class="listitem"><span>${i+1}. <b>${esc(t.name)}</b></span><b class="gold">${t.score}</b></div>`).join('')}</div>
       <button class="danger" id="h_end2" style="margin-top:14px">End Game &amp; Back to Console</button></div>`;
   }
@@ -600,6 +640,8 @@ function renderHost(){
   const ob = $('#h_openbuzz'); if (ob) ob.onclick = () => api('/api/host/openBuzz', {}, store.admin).catch(e=>alert(e.message));
   const sa = $('#h_showans'); if (sa) sa.onclick = () => { sa.classList.add('hidden'); const a = $('#h_ans'); if (a) a.classList.remove('hidden'); };
   const tj = $('#h_tojudge'); if (tj) tj.onclick = () => api('/api/host/finalJudgePhase', {}, store.admin);
+  const tv = $('#h_tovote'); if (tv) tv.onclick = () => api('/api/host/startVoting', {}, store.admin).catch(e=>alert(e.message));
+  const cv = $('#h_closevote'); if (cv) cv.onclick = () => api('/api/host/closeVoting', {}, store.admin).catch(e=>alert(e.message));
   app.querySelectorAll('[data-fj]').forEach(b => b.onclick = async () => { const [teamId, ok] = b.dataset.fj.split(':'); await api('/api/host/judgeFinal', { teamId, correct: ok==='1' }, store.admin).catch(e=>alert(e.message)); });
   const fin = $('#h_finish'); if (fin) fin.onclick = () => api('/api/host/finish', {}, store.admin);
 }
@@ -643,6 +685,27 @@ function renderPlayer(){
       body += `<div class="card center">${c.lastResult==='correct' ? `<h3>✅ ${esc(winnerName||'')} got it right! +${c.points}</h3>` : '<h3>❌ That question is closed.</h3>'}
         ${c.revealedAnswer ? `<p style="font-size:20px">Correct answer: <b class="gold">${esc(c.revealedAnswer)}</b></p>` : c.hostJudge ? '<p class="muted">The host judged this one from the slides.</p>' : '<p class="muted">The correct answer is on the big screen.</p>'}</div>`;
     }
+  } else if (S.phase === 'final_answer' && S.finalHostScored) {
+    if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer and sending it to the host on Slack.</p></div>`;
+    else body += `<div class="card"><h3 class="center gold">FINAL JEOPARDY — Your Team's Answer</h3>
+      <p class="muted">1️⃣ Write your team's answer / argument below.<br>2️⃣ Tap <b>Submit Answer</b>.<br>3️⃣ Also send the same text to the host on <b>Slack</b>.</p>
+      <textarea id="p_final" rows="5" placeholder="Your team's answer…">${esc(S.myFinalAnswer || '')}</textarea>
+      <div style="height:10px"></div><button class="big" id="p_final_go">${S.myFinalAnswer ? 'Update Answer' : 'Submit Answer'}</button>
+      ${S.myFinalAnswer ? '<div class="ok-banner center">Answer submitted ✓ — don\'t forget to send it on Slack too.</div>' : ''}</div>`;
+  } else if (S.phase === 'final_vote') {
+    const others = S.teams.filter(t => t.id !== me.teamId);
+    const reported = !!(me.teamId && S.finalReported && S.finalReported[me.teamId]);
+    if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy — Voting</h3><p class="muted">The answers are on the big screen. Discuss with your team and vote for <b>another</b> team's answer — your captain reports your team's vote counts.</p></div>`;
+    else if (reported) body += `<div class="card center"><h3 class="gold">✓ Votes reported</h3><p class="muted">Waiting for the other captains to report…</p></div>`;
+    else body += `<div class="card"><h3 class="center gold">Report Voting</h3>
+      <p class="muted">Count how many of your team voted for each other team's answer (you can't vote for your own), enter the numbers, then confirm.</p>
+      ${others.map(t => `<label>${esc(t.name)} — votes from your team</label><input type="number" min="0" inputmode="numeric" id="rv_${t.id}" value="0">`).join('')}
+      <div style="height:10px"></div><button class="big" id="p_report">Report Voting ✓</button></div>`;
+  } else if (S.phase === 'final_reveal') {
+    const r = S.finalResult || { winnerTeamIds: [], winnerVotes: 0, totalVotes: 0 };
+    const winners = S.teams.filter(t => r.winnerTeamIds.includes(t.id));
+    body += `<div class="champ"><div class="trophy">🗳️</div><div class="muted" style="letter-spacing:3px">FINAL JEOPARDY WINNER</div>
+      ${winners.length ? `<div class="wname">${winners.map(t=>esc(t.name)).join(' & ')}</div><div style="font-size:24px"><b class="gold">${r.winnerVotes}</b> / ${r.totalVotes} votes</div>` : '<div class="wname">No votes cast</div>'}</div>`;
   } else if (S.phase === 'final_answer') {
     if (!me.isCaptain) body += `<div class="card center"><h3 class="gold">Final Jeopardy</h3><p class="muted">Your captain is writing the team's answer.</p></div>`;
     else body += `<div class="card"><h3 class="center gold">FINAL JEOPARDY — ${S.finalPoints} points</h3>
@@ -658,12 +721,14 @@ function renderPlayer(){
     const champ = standings[0];
     body += `<div class="champ"><div class="trophy">🏆</div><div class="muted" style="letter-spacing:3px">CHAMPION</div>
       <div class="wname">${champ ? esc(champ.name) : ''}</div><div style="font-size:22px">${champ ? champ.score : 0} points</div>
+      ${S.finalResult && S.finalResult.winnerTeamIds.length ? `<p style="margin-top:8px">🗳️ Final Jeopardy winner: <b class="gold">${S.finalResult.winnerTeamIds.map(id => esc((S.teams.find(t=>t.id===id)||{}).name || '')).join(' & ')}</b> (${S.finalResult.winnerVotes}/${S.finalResult.totalVotes} votes)</p>` : ''}
       ${myTeam ? `<p style="margin-top:10px">Your team finished with <b class="gold">${myTeam.score}</b> points.</p>` : ''}</div>`;
   }
   app.innerHTML = body;
   const bz = $('#p_buzz'); if (bz) bz.onclick = async () => { bz.disabled = true; try { await api('/api/player/buzz', {}, store.player); } catch(e){ /* too early / locked — state will update */ } };
   app.querySelectorAll('[data-ans]').forEach(b => b.onclick = async () => { await api('/api/player/answer', { choiceIndex: +b.dataset.ans }, store.player).catch(()=>{}); });
   const fg = $('#p_final_go'); if (fg) fg.onclick = async () => { await api('/api/player/finalAnswer', { text: $('#p_final').value }, store.player).catch(e=>alert(e.message)); };
+  const rp = $('#p_report'); if (rp) rp.onclick = async () => { const votes = {}; app.querySelectorAll('[id^="rv_"]').forEach(inp => { votes[inp.id.slice(3)] = +inp.value || 0; }); rp.disabled = true; await api('/api/player/reportVotes', { votes }, store.player).catch(e=>{ rp.disabled = false; alert(e.message); }); };
 }
 
 /* ================= boot ================= */
