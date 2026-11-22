@@ -187,8 +187,8 @@ function stateFor(client) {
       phase: cq.phase, phaseEndsAt: cq.phaseEndsAt, answerDeadline: cq.answerDeadline,
       buzzWinnerTeamId: cq.buzzWinnerTeamId, lockedTeamIds: cq.lockedTeamIds,
       lastResult: cq.lastResult, timedOut: cq.timedOut, points: cq.q.points, type: cq.q.type,
-      // options only for the answering captain (phone-answer mode, or host-judged picks); open questions never expose options
-      options: cq.q.type === 'open' ? null : (isWinningCaptain && cq.phase === 'answer' && (g.templateSnapshot.settings.answerMode === 'phone' || cq.q.hostJudge) ? cq.q.options : null),
+      // options only for the answering captain; choice/TF questions are answered on the phone in every mode; open questions never expose options
+      options: cq.q.type === 'open' ? null : (isWinningCaptain && cq.phase === 'answer' ? cq.q.options : null),
       revealedAnswer: cq.phase === 'reveal' && cq.q.type === 'open' ? (cq.q.answer || '') : null,
       hostJudge: !!cq.q.hostJudge,
       myPick: cq.submission && me && cq.submission.teamId === me.teamId ? cq.submission.choiceIndex : null,
@@ -444,7 +444,8 @@ const routes = {
       cq.answerDeadline = null;
       changed(); return send(res, 200, { ok: true, pending: true });
     }
-    if (g.templateSnapshot.settings.answerMode !== 'phone') return send(res, 400, { error: 'This game uses oral answers — the host judges' });
+    if (cq.q.type === 'open') return send(res, 400, { error: 'Open question — the host judges' });
+    // known-answer choice/TF questions auto-judge in every mode; only open and hostJudge questions go to the host
     const correct = Number(b.choiceIndex) === cq.q.correctIndex;
     if (correct) resolveCorrect(g, cq);
     else { applyDeduction(g, g.templateSnapshot, team, cq.q.points); cq.lockedTeamIds.push(team.id); resolveWrong(g, g.templateSnapshot, cq); }
