@@ -147,6 +147,7 @@ function stateFor(client) {
   const base = { serverNow: Date.now(), gameExists: !!g };
   if (!g) return base;
   base.code = g.code; base.phase = g.phase; base.startedAt = g.startedAt;
+  base.title = g.title || g.templateSnapshot.name;
   base.answerSeconds = g.templateSnapshot.settings.answerSeconds;
   base.finalSeconds = g.templateSnapshot.settings.finalSeconds;
   base.finalDeadline = g.finalDeadline;
@@ -263,7 +264,8 @@ const routes = {
     if (!tpl) return send(res, 404, { error: 'template not found' });
     if (DB.game && DB.game.phase !== 'finished') return send(res, 409, { error: 'A game is already active. End it first.' });
     DB.game = {
-      code: newCode(), phase: 'lobby', templateSnapshot: JSON.parse(JSON.stringify(tpl)),
+      code: newCode(), phase: 'lobby', title: String(b.title || '').trim().slice(0, 80) || tpl.name,
+      templateSnapshot: JSON.parse(JSON.stringify(tpl)),
       teams: [], players: [], usedQuestionIds: [], current: null,
       startedAt: null, finalPoints: tpl.final.points || 1000,
       finalSubmissions: {}, finalJudged: {}, finalDeadline: null,
