@@ -114,6 +114,24 @@ function resolveCorrect(g, cq) {
   g.usedQuestionIds.push(cq.q.id);
 }
 
+/* Peer-voting final: tally every captain's report. Only the winner's aggregate
+   is ever exposed — individual team totals stay server-side. */
+function computeFinalResult(g) {
+  const totals = {}; g.teams.forEach(t => { totals[t.id] = 0; });
+  let totalVotes = 0;
+  for (const rep of Object.values(g.finalReports)) {
+    for (const [tid, n] of Object.entries(rep)) {
+      if (totals[tid] !== undefined) { totals[tid] += n; totalVotes += n; }
+    }
+  }
+  const max = Math.max(0, ...Object.values(totals));
+  g.finalResult = {
+    winnerTeamIds: totalVotes > 0 ? g.teams.filter(t => totals[t.id] === max).map(t => t.id) : [],
+    winnerVotes: totalVotes > 0 ? max : 0,
+    totalVotes,
+  };
+}
+
 function tick() {
   const g = currentGame();
   if (!g || !g.templateSnapshot) return;
@@ -171,6 +189,8 @@ function stateFor(client) {
       category: g.templateSnapshot.final.category, question: g.templateSnapshot.final.question,
       answer: g.templateSnapshot.final.answer, hostScored: !!g.templateSnapshot.final.hostScored,
       submissions: g.finalSubmissions, judged: g.finalJudged,
+      reported: Object.fromEntries(g.teams.map(t => [t.id, !!g.finalReports[t.id]])),
+      result: (g.phase === 'final_reveal' || g.phase === 'finished') ? g.finalResult : null,
     } : null;
     return base;
   }
@@ -195,10 +215,14 @@ function stateFor(client) {
       myFinalSubmitted: undefined,
     };
   }
-  if (g.phase === 'final_answer' || g.phase === 'final_judge' || g.phase === 'finished') {
+  if (g.phase === 'final_answer' || g.phase === 'final_judge' || g.phase === 'final_vote' || g.phase === 'final_reveal' || g.phase === 'finished') {
     base.finalPoints = g.finalPoints;
     base.finalDeadline = g.finalDeadline;
+    base.finalHostScored = !!g.templateSnapshot.final.hostScored;
+    base.finalReported = {}; g.teams.forEach(t => { base.finalReported[t.id] = !!g.finalReports[t.id]; });
+    base.finalSubmittedCount = Object.keys(g.finalSubmissions).length;
     if (me) base.myFinalAnswer = g.finalSubmissions[me.teamId] || null;
+    if (g.phase === 'final_reveal' || g.phase === 'finished') base.finalResult = g.finalResult;
     if (g.phase === 'finished') base.finalStandings = publicTeams(g).slice().sort((a, b) => b.score - a.score);
   }
   return base;
@@ -269,6 +293,7 @@ const routes = {
       teams: [], players: [], usedQuestionIds: [], current: null,
       startedAt: null, finalPoints: tpl.final.points || 1000,
       finalSubmissions: {}, finalJudged: {}, finalDeadline: null,
+      finalReports: {}, finalResult: null,
     };
     changed(); send(res, 200, { code: DB.game.code });
   },
@@ -345,13 +370,26 @@ const routes = {
     const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
     g.current = null;
     if (g.templateSnapshot.final.hostScored) {
-      // answered offline (PPT / paper): no phone submissions — go straight to host judging
-      g.phase = 'final_judge'; g.finalDeadline = null;
+      // peer-voting final: captains submit their team's answer text, teams then vote for other teams' answers
+      g.phase = 'final_answer'; g.finalDeadline = null;
+      g.finalSubmissions = {}; g.finalReports = {}; g.finalResult = null;
     } else {
       g.phase = 'final_answer';
       g.finalDeadline = Date.now() + (g.templateSnapshot.settings.finalSeconds || 30) * 1000;
     }
     changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/startVoting': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    if (g.phase !== 'final_answer' || !g.templateSnapshot.final.hostScored) return send(res, 400, { error: 'not in the voting final answer phase' });
+    g.phase = 'final_vote'; changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/host/closeVoting': (req, res) => {
+    if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    if (g.phase !== 'final_vote') return send(res, 400, { error: 'not in the voting phase' });
+    computeFinalResult(g); g.phase = 'final_reveal'; changed(); send(res, 200, { ok: true });
   },
   'POST /api/host/finalJudgePhase': (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
@@ -459,7 +497,27 @@ const routes = {
     const team = teamById(g, me.teamId);
     if (!team || team.captainId !== me.id) return send(res, 403, { error: 'Only the captain submits the Final answer' });
     if (g.phase !== 'final_answer') return send(res, 400, { error: 'Final answers are not open' });
-    g.finalSubmissions[me.teamId] = String(b.text || '').slice(0, 500);
+    g.finalSubmissions[me.teamId] = String(b.text || '').slice(0, 2000);
+    changed(); send(res, 200, { ok: true });
+  },
+  'POST /api/player/reportVotes': async (req, res) => {
+    const s = authPlayer(req); if (!s) return send(res, 401, { error: 'session expired' });
+    const b = await readBody(req);
+    const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
+    const me = playerById(g, s.playerId); if (!me || me.role !== 'player') return send(res, 403, { error: 'players only' });
+    const team = teamById(g, me.teamId);
+    if (!team || team.captainId !== me.id) return send(res, 403, { error: 'Only the captain reports the votes' });
+    if (g.phase !== 'final_vote') return send(res, 400, { error: 'Voting is not open' });
+    if (g.finalReports[me.teamId]) return send(res, 400, { error: 'Votes already reported' });
+    const votes = {};
+    for (const [tid, n] of Object.entries(b.votes || {})) {
+      if (tid === me.teamId) continue; // a team can never vote for itself
+      if (!teamById(g, tid)) continue;
+      const v = Math.floor(Number(n));
+      if (Number.isFinite(v) && v > 0) votes[tid] = Math.min(v, 9999);
+    }
+    g.finalReports[me.teamId] = votes;
+    if (g.teams.every(t => g.finalReports[t.id])) { computeFinalResult(g); g.phase = 'final_reveal'; }
     changed(); send(res, 200, { ok: true });
   },
 };
