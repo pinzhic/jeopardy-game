@@ -85,10 +85,16 @@ function questionById(tpl, qid) {
   return null;
 }
 
-function applyDeduction(g, tpl, team, points) {
+function logScore(g, teamId, label, delta) {
+  if (!g.scoreLog) g.scoreLog = [];
+  g.scoreLog.push({ teamId, label, delta });
+}
+
+function applyDeduction(g, tpl, team, points, cq) {
   const mode = tpl.settings.deduction;
   const d = mode === 'full' ? points : mode === 'half' ? Math.floor(points / 2) : 0;
   team.score -= d;
+  logScore(g, team.id, (cq ? cq.groupTitle + ' · ' + points : 'Question'), -d);
 }
 
 function resolveWrong(g, tpl, cq) {
@@ -108,7 +114,7 @@ function resolveWrong(g, tpl, cq) {
 
 function resolveCorrect(g, cq) {
   const winner = teamById(g, cq.buzzWinnerTeamId);
-  if (winner) winner.score += cq.q.points;
+  if (winner) { winner.score += cq.q.points; logScore(g, winner.id, cq.groupTitle + ' · ' + cq.q.points, cq.q.points); }
   cq.phase = 'reveal';
   cq.lastResult = 'correct';
   g.usedQuestionIds.push(cq.q.id);
@@ -130,6 +136,13 @@ function computeFinalResult(g) {
     winnerVotes: totalVotes > 0 ? max : 0,
     totalVotes,
   };
+  // the vote winner(s) earn the Final points, added to their total score
+  if (g.finalPoints) {
+    for (const id of g.finalResult.winnerTeamIds) {
+      const t = teamById(g, id);
+      if (t) { t.score += g.finalPoints; logScore(g, id, 'Final Jeopardy — vote winner', g.finalPoints); }
+    }
+  }
 }
 
 function tick() {
@@ -142,7 +155,7 @@ function tick() {
   if (cq) {
     if (cq.phase === 'answer' && cq.answerDeadline && !cq.submission && now > cq.answerDeadline) {
       const loser = teamById(g, cq.buzzWinnerTeamId);
-      if (loser) { applyDeduction(g, tpl, loser, cq.q.points); cq.lockedTeamIds.push(loser.id); }
+      if (loser) { applyDeduction(g, tpl, loser, cq.q.points, cq); cq.lockedTeamIds.push(loser.id); }
       cq.timedOut = true;
       resolveWrong(g, tpl, cq);
       dirty = true;
@@ -192,6 +205,7 @@ function stateFor(client) {
       reported: Object.fromEntries(g.teams.map(t => [t.id, !!g.finalReports[t.id]])),
       result: (g.phase === 'final_reveal' || g.phase === 'finished') ? g.finalResult : null,
     } : null;
+    if (g.phase === 'finished') base.scoreLog = g.scoreLog || [];
     return base;
   }
 
@@ -223,7 +237,7 @@ function stateFor(client) {
     base.finalSubmittedCount = Object.keys(g.finalSubmissions).length;
     if (me) base.myFinalAnswer = g.finalSubmissions[me.teamId] || null;
     if (g.phase === 'final_reveal' || g.phase === 'finished') base.finalResult = g.finalResult;
-    if (g.phase === 'finished') base.finalStandings = publicTeams(g).slice().sort((a, b) => b.score - a.score);
+    if (g.phase === 'finished') { base.finalStandings = publicTeams(g).slice().sort((a, b) => b.score - a.score); base.scoreLog = g.scoreLog || []; }
   }
   return base;
 }
@@ -293,7 +307,7 @@ const routes = {
       teams: [], players: [], usedQuestionIds: [], current: null,
       startedAt: null, finalPoints: tpl.final.points || 1000,
       finalSubmissions: {}, finalJudged: {}, finalDeadline: null,
-      finalReports: {}, finalResult: null,
+      finalReports: {}, finalResult: null, scoreLog: [],
     };
     changed(); send(res, 200, { code: DB.game.code });
   },
@@ -334,7 +348,7 @@ const routes = {
     const cq = g.current; if (cq.phase !== 'answer') return send(res, 400, { error: 'not in answer phase' });
     const team = teamById(g, cq.buzzWinnerTeamId);
     if (b.correct) { resolveCorrect(g, cq); }
-    else { if (team) { applyDeduction(g, g.templateSnapshot, team, cq.q.points); cq.lockedTeamIds.push(team.id); } resolveWrong(g, g.templateSnapshot, cq); }
+    else { if (team) { applyDeduction(g, g.templateSnapshot, team, cq.q.points, cq); cq.lockedTeamIds.push(team.id); } resolveWrong(g, g.templateSnapshot, cq); }
     changed(); send(res, 200, { ok: true });
   },
   'POST /api/host/skip': (req, res) => {
@@ -357,7 +371,9 @@ const routes = {
     const b = await readBody(req);
     const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
     const t = teamById(g, b.teamId); if (!t) return send(res, 404, { error: 'team not found' });
-    t.score += Number(b.delta) || 0; changed(); send(res, 200, { ok: true });
+    const delta = Number(b.delta) || 0;
+    t.score += delta; if (delta) logScore(g, t.id, 'Host adjustment', delta);
+    changed(); send(res, 200, { ok: true });
   },
   'POST /api/host/setFinalPoints': async (req, res) => {
     if (!authAdmin(req)) return send(res, 401, { error: 'login required' });
@@ -404,6 +420,7 @@ const routes = {
     const t = teamById(g, b.teamId); if (!t) return send(res, 404, { error: 'team not found' });
     g.finalJudged[b.teamId] = !!b.correct;
     t.score += b.correct ? g.finalPoints : -g.finalPoints;
+    logScore(g, t.id, 'Final Jeopardy', b.correct ? g.finalPoints : -g.finalPoints);
     changed(); send(res, 200, { ok: true });
   },
   'POST /api/host/finish': (req, res) => {
@@ -486,7 +503,7 @@ const routes = {
     // known-answer choice/TF questions auto-judge in every mode; only open and hostJudge questions go to the host
     const correct = Number(b.choiceIndex) === cq.q.correctIndex;
     if (correct) resolveCorrect(g, cq);
-    else { applyDeduction(g, g.templateSnapshot, team, cq.q.points); cq.lockedTeamIds.push(team.id); resolveWrong(g, g.templateSnapshot, cq); }
+    else { applyDeduction(g, g.templateSnapshot, team, cq.q.points, cq); cq.lockedTeamIds.push(team.id); resolveWrong(g, g.templateSnapshot, cq); }
     changed(); send(res, 200, { ok: true, correct });
   },
   'POST /api/player/finalAnswer': async (req, res) => {
