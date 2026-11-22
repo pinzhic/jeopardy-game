@@ -391,7 +391,7 @@ const routes = {
       g.finalSubmissions = {}; g.finalReports = {}; g.finalResult = null;
     } else {
       g.phase = 'final_answer';
-      g.finalDeadline = Date.now() + (g.templateSnapshot.settings.finalSeconds || 30) * 1000;
+      g.finalDeadline = null; // no time limit on Final answers — the host closes answers manually
     }
     changed(); send(res, 200, { ok: true });
   },
