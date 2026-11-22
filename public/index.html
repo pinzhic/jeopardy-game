@@ -104,6 +104,7 @@
   .board .colhead{min-height:46px;padding:8px 6px}
   .qstem{padding:10px 8px}
   .qimg{max-height:290px}
+  .qimg.big{max-height:60vh;width:auto}
   .timerbar{height:14px;background:#1b26a8;border-radius:7px;overflow:hidden;margin:12px auto;max-width:540px}
   .timerbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--gold-soft),var(--gold));transition:width .2s linear}
   .timerbar>i.low{background:var(--danger)}
@@ -231,7 +232,7 @@ function renderHome(){
       <p class="small muted" style="margin-top:12px">Preset accounts: admin1 / admin123 · admin2 / admin123 · host1 / host123</p>
     </div>
   </div>
-  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v12</p>`;
+  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v13</p>`;
   $('#j_find').onclick = async () => {
     uiError = '';
     const code = $('#j_code').value.toUpperCase().trim();
@@ -624,10 +625,11 @@ function renderHost(){
           ? `<p class="center" style="font-size:22px;margin-top:8px">${c.submission ? `Their pick: <b class="gold">${'ABCD'[c.submission.choiceIndex] || ''}</b> — ` : ''}${c.lastResult === 'correct' ? '✅ Correct' : '❌ Wrong'}</p>`
           : `<p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>`}`;
     }
+    const imgFocus = c.groupTitle === 'AI versus Human' && !!c.image; // image round: no instruction text, picture takes the stage
     body = `<div class="hostwrap"><div class="hostmain"><div class="card">
       <div class="center"><span class="pill">${esc(c.groupTitle)} · ${c.points} points</span></div>
-      <div class="qstem${c.stem.length > 140 ? ' reading' : ''}">${esc(c.stem)}</div>
-      ${c.image ? `<img class="qimg zoomable" src="${c.image}" title="Click to view full screen"><p class="center small muted" style="margin-top:2px">🔍 Click the image to view it full screen</p>` : ''}
+      ${imgFocus ? '' : `<div class="qstem${c.stem.length > 140 ? ' reading' : ''}">${esc(c.stem)}</div>`}
+      ${c.image ? `<img class="qimg zoomable${imgFocus ? ' big' : ''}" src="${c.image}" title="Click to view full screen">${imgFocus ? '' : '<p class="center small muted" style="margin-top:2px">🔍 Click the image to view it full screen</p>'}` : ''}
       ${phaseUI}
       ${c.options && c.options.length ? `<div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? 'correct':''} ${c.submission && c.submission.choiceIndex===i ? 'picked':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? ' ✓':''}${c.submission && c.submission.choiceIndex===i ? ' 📱' : ''}</div>`).join('')}</div>` : ''}
       <div class="row" style="margin-top:16px"><button class="secondary" id="h_backboard">← Back to the Board</button></div>
