@@ -52,6 +52,8 @@
     font-weight:900;font-size:clamp(18px,3vw,30px);text-align:center;padding:20px 4px;cursor:pointer;text-shadow:0 2px 0 #0009}
   .tile:hover{border-color:var(--gold)}
   .tile.used{background:#050a4d;color:#3d47a0;cursor:default;text-decoration:line-through;border-color:#1b26a8}
+  .tile.locked{background:#0a1060;color:#5a66c9;cursor:not-allowed;border-color:#232c96}
+  .tile .lock{display:block;font-size:12px;text-decoration:none}
   .tile .rem{display:block;font-size:11px;color:var(--muted);text-decoration:none;font-weight:600}
   /* scoreboard */
   .scores{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:14px 0}
@@ -65,6 +67,9 @@
   .adj button{padding:5px 10px;font-size:13px}
   /* question screen */
   .qstem{font-size:clamp(24px,4.4vw,44px);font-weight:800;line-height:1.25;text-align:center;padding:18px 8px}
+  .qstem.reading{font-size:21px;font-weight:400;line-height:1.6;text-align:left;letter-spacing:0;padding:14px 10px}
+  .hostside .scorebox .tscore{font-size:25px}
+  .hostside .scorebox .tname{font-size:15px}
   .qimg{display:block;max-width:100%;max-height:340px;margin:8px auto;border-radius:10px;border:2px solid var(--gold)}
   .qimg.zoomable{cursor:zoom-in}
   .imgzoom{position:fixed;inset:0;background:rgba(0,0,0,.94);z-index:300;display:flex;align-items:center;justify-content:center;cursor:zoom-out;padding:12px}
@@ -188,6 +193,7 @@ function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','
 function errBox(msg){ return msg ? '<div class="err">' + esc(msg) + '</div>' : ''; }
 let uiError = '';
 let zoomImg = null;                    // host full-screen image overlay (image src while open)
+let adjustOpenFor = null;              // team id whose Manual Adjust panel is open in the sidebar
 </script>
 <script>
 'use strict';
@@ -225,7 +231,7 @@ function renderHome(){
       <p class="small muted" style="margin-top:12px">Preset accounts: admin1 / admin123 · admin2 / admin123 · host1 / host123</p>
     </div>
   </div>
-  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v10</p>`;
+  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v12</p>`;
   $('#j_find').onclick = async () => {
     uiError = '';
     const code = $('#j_code').value.toUpperCase().trim();
@@ -447,8 +453,9 @@ function scoreboardHTML(host){
       <div class="tname">${esc(t.name)}</div>
       <div class="tscore ${t.score<0?'neg':''}">${t.score}</div>
       <div class="members">${t.members.map(m=>esc(m.name)).join(', ') || '—'}</div>
-      ${host ? `<div class="adj"><button data-adj="${t.id}:-500">−500</button><button data-adj="${t.id}:-100">−100</button><button data-adj="${t.id}:100">+100</button><button data-adj="${t.id}:500">+500</button></div>
-      <div class="adjcustom"><input type="number" placeholder="± amount" data-adjin="${t.id}"><button data-adjgo="${t.id}">Apply</button></div>` : ''}
+      ${host ? `<div style="margin-top:6px"><button class="secondary" data-adjopen="${t.id}" style="padding:4px 14px;font-size:13px">${adjustOpenFor === t.id ? 'Close' : 'Manual Adjust'}</button></div>
+      ${adjustOpenFor === t.id ? `<div class="adj"><button data-adj="${t.id}:-500">−500</button><button data-adj="${t.id}:-100">−100</button><button data-adj="${t.id}:100">+100</button><button data-adj="${t.id}:500">+500</button></div>
+      <div class="adjcustom"><input type="number" placeholder="± amount" data-adjin="${t.id}"><button data-adjgo="${t.id}">Apply</button></div>` : ''}` : ''}
     </div>`).join('') + '</div>';
 }
 function recapHTML(){
@@ -462,6 +469,7 @@ function recapHTML(){
     }).join('') + '</div>';
 }
 function bindAdjust(){
+  app.querySelectorAll('[data-adjopen]').forEach(b => b.onclick = () => { adjustOpenFor = adjustOpenFor === b.dataset.adjopen ? null : b.dataset.adjopen; renderHost(); });
   app.querySelectorAll('[data-adj]').forEach(b => b.onclick = async () => {
     const [teamId, delta] = b.dataset.adj.split(':');
     await api('/api/host/adjust', { teamId, delta: +delta }, store.admin).catch(e=>alert(e.message));
@@ -537,6 +545,8 @@ function renderHost(){
         <p style="font-size:16px;line-height:1.5;margin:5px 0">🔔 The host opens buzzing for each question — captains, buzz fast!</p>
         <p style="font-size:16px;line-height:1.5;margin:5px 0">✅ Some questions are answered <b>on the captain's phone</b> (multiple choice / true–false) and scored automatically.</p>
         <p style="font-size:16px;line-height:1.5;margin:5px 0">🗣️ Some questions are answered <b>out loud</b>, as the host directs — the host judges those.</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">⏱ <b>Buzz first, think fast:</b> after buzzing, the captain has <b>${S.answerSeconds || 20} seconds</b> to answer — don't buzz and then think it over. No answer in time counts as wrong: points are deducted, that team sits out the question, and the other teams get another chance to buzz.</p>
+        <p style="font-size:16px;line-height:1.5;margin:5px 0">🪜 <b>Categories go in order:</b> in each category, questions unlock from low to high — finish the 100 to open the 200, then the 300, and so on.</p>
         <p style="font-size:16px;line-height:1.5;margin:5px 0">💰 Correct answers add points; wrong answers subtract them.</p>
         <p style="font-size:16px;line-height:1.5;margin:5px 0">🏁 <b>Final Jeopardy:</b> captains send their team's answer to the host on <b>Slack</b>. Then every team votes for <b>another</b> team's answer, captains report the vote counts, and the winner earns the Final points.</p>
       </div>
@@ -552,12 +562,16 @@ function renderHost(){
       <h3 class="center gold" style="margin-bottom:10px">Pick a question</h3>
       <div class="board" style="grid-template-columns:repeat(${cols},1fr)">
       ${tpl.groups.map(gr => `<div class="colhead">${esc(gr.title)}</div>`).join('')}
-      ${(() => { const maxRows = Math.max(...tpl.groups.map(g=>g.questions.length)); let cells='';
+      ${(() => { const unlocked = new Set();
+        for (const gr of tpl.groups) { const ordered = [...gr.questions].sort((a,b)=>a.points-b.points);
+          for (const q of ordered) { if (!S.usedQuestionIds.includes(q.id)) { unlocked.add(q.id); break; } } }
+        const maxRows = Math.max(...tpl.groups.map(g=>g.questions.length)); let cells='';
         for (let r=0;r<maxRows;r++) for (const gr of tpl.groups) { const q = gr.questions[r];
           if (!q) { cells += '<div></div>'; continue; }
           const used = S.usedQuestionIds.includes(q.id);
           cells += used ? `<div class="tile used">${q.points}</div>`
-                         : `<div class="tile" data-open="${q.id}">${q.points}</div>`; }
+                   : unlocked.has(q.id) ? `<div class="tile" data-open="${q.id}">${q.points}</div>`
+                   : `<div class="tile locked">${q.points}<span class="lock">🔒</span></div>`; }
         return cells; })()}
       </div></div>
       <div class="hostside">${scoreboardHTML(true)}
@@ -587,6 +601,9 @@ function renderHost(){
         <button class="big" id="h_openbuzz" style="font-size:24px;padding:20px 28px;margin-top:8px">🔔 Open Buzzing</button>`;
     } else if (c.phase === 'buzz') {
       phaseUI = `<p class="center"><span class="pill" style="font-size:20px">🔔 BUZZ NOW!</span></p>`;
+    } else if (c.phase === 'rebuzz') {
+      const tName = (S.teams.find(t=>t.id===c.lastTimeoutTeamId)||{}).name || 'That team';
+      phaseUI = `<p class="center" style="font-size:20px">⏱ <b class="gold">${esc(tName)}</b> didn't answer in time — <b>−${c.points}</b>.<br>Buzzing reopens in <b><span class="js-cd" data-end="${c.phaseEndsAt}">${Math.max(0, Math.ceil(((c.phaseEndsAt||now())-now())/1000))}</span>s</b> for the other teams…</p>`;
     } else if (c.phase === 'answer') {
       const secsLeft = c.answerDeadline ? Math.max(0, Math.ceil((c.answerDeadline - now())/1000)) : null;
       phaseUI = `<p class="center" style="font-size:20px"><b class="gold">${esc(winner ? winner.name : '')}</b> is answering${secsLeft!==null ? ` — <b><span class="js-cd" data-end="${c.answerDeadline}">${secsLeft}</span>s</b> left` : ''}…</p>` +
@@ -609,7 +626,7 @@ function renderHost(){
     }
     body = `<div class="hostwrap"><div class="hostmain"><div class="card">
       <div class="center"><span class="pill">${esc(c.groupTitle)} · ${c.points} points</span></div>
-      <div class="qstem">${esc(c.stem)}</div>
+      <div class="qstem${c.stem.length > 140 ? ' reading' : ''}">${esc(c.stem)}</div>
       ${c.image ? `<img class="qimg zoomable" src="${c.image}" title="Click to view full screen"><p class="center small muted" style="margin-top:2px">🔍 Click the image to view it full screen</p>` : ''}
       ${phaseUI}
       ${c.options && c.options.length ? `<div class="opts">${c.options.map((op, i) => `<div class="opt ${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? 'correct':''} ${c.submission && c.submission.choiceIndex===i ? 'picked':''}"><span class="letter">${'ABCD'[i]}</span>${esc(op)}${c.phase==='reveal' && !c.hostJudge && i===c.correctIndex ? ' ✓':''}${c.submission && c.submission.choiceIndex===i ? ' 📱' : ''}</div>`).join('')}</div>` : ''}
@@ -701,6 +718,10 @@ function renderPlayer(){
       if (!me.isCaptain) body += `<div class="card center"><h3>Buzzing is open!</h3><p class="muted">Your captain has the buzzer.</p></div>`;
       else if (locked) body += `<div class="card center"><h3>Your team is locked out of this one</h3><p class="muted">A wrong answer earlier — sit this question out.</p></div>`;
       else body += `<button class="buzzer" id="p_buzz">BUZZ!</button>`;
+    } else if (c.phase === 'rebuzz') {
+      const tName = (S.teams.find(t=>t.id===c.lastTimeoutTeamId)||{}).name || 'A team';
+      body += `<div class="card center"><h3>⏱ ${esc(tName)} ran out of time!</h3><p class="muted">No answer in time — points deducted, and that team is out for this question. Buzzing reopens in <b><span class="js-cd" data-end="${c.phaseEndsAt}">${Math.max(0, Math.ceil(((c.phaseEndsAt||now())-now())/1000))}</span>s</b>…</p>
+        ${locked ? '<p>Your team is locked out of this question.</p>' : me.isCaptain ? '<p>⭐ Captains: get ready to buzz again!</p>' : ''}</div>`;
     } else if (c.phase === 'answer') {
       const mine = c.buzzWinnerTeamId === me.teamId;
       if (!mine) body += `<div class="card center"><h3>${esc((S.teams.find(t=>t.id===c.buzzWinnerTeamId)||{}).name || 'Another team')} is answering…</h3></div>`;
