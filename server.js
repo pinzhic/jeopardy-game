@@ -370,7 +370,7 @@ const routes = {
     const g = currentGame(); if (!g) return send(res, 404, { error: 'no game' });
     g.current = null;
     if (g.templateSnapshot.final.hostScored) {
-      // peer-voting final: captains submit their team's answer text, teams then vote for other teams' answers
+      // peer-voting final: answers go to the host on Slack (nothing is collected or shown in the app); teams then vote for other teams' answers
       g.phase = 'final_answer'; g.finalDeadline = null;
       g.finalSubmissions = {}; g.finalReports = {}; g.finalResult = null;
     } else {
@@ -497,6 +497,7 @@ const routes = {
     const team = teamById(g, me.teamId);
     if (!team || team.captainId !== me.id) return send(res, 403, { error: 'Only the captain submits the Final answer' });
     if (g.phase !== 'final_answer') return send(res, 400, { error: 'Final answers are not open' });
+    if (g.templateSnapshot.final.hostScored) return send(res, 400, { error: 'This Final runs on Slack — send your answer to the host there, not in the app.' });
     g.finalSubmissions[me.teamId] = String(b.text || '').slice(0, 2000);
     changed(); send(res, 200, { ok: true });
   },
