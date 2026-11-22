@@ -108,7 +108,7 @@
   .timerbar{height:14px;background:#1b26a8;border-radius:7px;overflow:hidden;margin:12px auto;max-width:540px}
   .timerbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--gold-soft),var(--gold));transition:width .2s linear}
   .timerbar>i.low{background:var(--danger)}
-  .js-cd.urgent{color:var(--danger)!important}
+  .js-cd.urgent,.js-cdmm.urgent{color:var(--danger)!important}
   .champ{background:linear-gradient(180deg,#3a2f00,#141000);border:3px solid var(--gold);border-radius:16px;padding:28px;text-align:center}
   .champ .trophy{font-size:74px}
   .champ .wname{font-size:clamp(30px,6vw,54px);font-weight:900;color:var(--gold)}
@@ -183,6 +183,17 @@ setInterval(() => {
     if (el.textContent !== String(remain)) el.textContent = String(remain);
     el.classList.toggle('urgent', end - t <= 5000 && end - t > 0);
   });
+  document.querySelectorAll('.js-cdmm').forEach(el => {
+    const end = +el.dataset.end || 0; if (!end) return;
+    const remain = Math.max(0, Math.ceil((end - t) / 1000));
+    const txt = Math.floor(remain / 60) + ':' + String(remain % 60).padStart(2, '0');
+    if (el.textContent !== txt) el.textContent = txt;
+    el.classList.toggle('urgent', end - t <= 60000 && end - t > 0);
+  });
+  document.querySelectorAll('.js-cdmm-note').forEach(el => {
+    const end = +el.dataset.end || 0; if (!end) return;
+    el.style.display = t >= end ? '' : 'none';
+  });
   document.querySelectorAll('.js-tfill').forEach(el => {
     const end = +el.dataset.end || 0, total = (+el.dataset.total || 0) * 1000;
     if (!end || !total) return;
@@ -232,7 +243,7 @@ function renderHome(){
       <p class="small muted" style="margin-top:12px">Preset accounts: admin1 / admin123 · admin2 / admin123 · host1 / host123</p>
     </div>
   </div>
-  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v13</p>`;
+  <p class="center small muted" style="margin-top:10px">build 2026-11-22 · v15</p>`;
   $('#j_find').onclick = async () => {
     uiError = '';
     const code = $('#j_code').value.toUpperCase().trim();
@@ -499,6 +510,9 @@ function votingFinalHostHTML(f){
     return `<div class="hostwrap"><div class="hostmain"><div class="card center">
       <h2 class="gold">FINAL JEOPARDY — Answers via Slack</h2>
       <p style="font-size:18px">Captains: send your team's answer to the host on <b>Slack</b>.<br>Nothing to type in this app.</p>
+      ${S.finalAnswerEndsAt ? `<div style="margin:12px auto 2px"><div class="muted" style="font-size:13px;letter-spacing:2px">TIME TO SEND YOUR ANSWERS</div>
+      <div class="js-cdmm" data-end="${S.finalAnswerEndsAt}" style="font-size:38px;font-weight:800;color:var(--gold);font-variant-numeric:tabular-nums;line-height:1.15">${(() => { const r = Math.max(0, Math.ceil((S.finalAnswerEndsAt - now()) / 1000)); return Math.floor(r / 60) + ':' + String(r % 60).padStart(2, '0'); })()}</div>
+      <div class="js-cdmm-note" data-end="${S.finalAnswerEndsAt}" style="display:none;font-size:17px;color:var(--danger);font-weight:700">⏰ Time's up — captains, send your answers now!</div></div>` : ''}
       <p class="muted" style="margin-top:8px">Host: present each team's answer on your other screen. When every answer has been shown, open the vote:</p>
       <button class="big" id="h_tovote" style="margin-top:10px">All Answers Presented → Start Voting</button>
     </div></div>
@@ -623,7 +637,9 @@ function renderHost(){
       phaseUI = `<div class="center" style="font-size:20px">${c.lastResult === 'correct' ? '✅ <b class="gold">' + esc(winner ? winner.name : '') + '</b> got it right! +' + c.points : '❌ Nobody got it.'}</div>
         ${c.hostJudge
           ? `<p class="center" style="font-size:22px;margin-top:8px">${c.submission ? `Their pick: <b class="gold">${'ABCD'[c.submission.choiceIndex] || ''}</b> — ` : ''}${c.lastResult === 'correct' ? '✅ Correct' : '❌ Wrong'}</p>`
-          : `<p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>`}`;
+          : ansText
+          ? `<p class="center" style="font-size:22px;margin-top:8px">Correct answer: <b class="gold">${esc(ansText)}</b></p>`
+          : '<p class="center muted" style="font-size:18px;margin-top:8px">The answer was on the PPT slides.</p>'}`;
     }
     const imgFocus = c.groupTitle === 'AI versus Human' && !!c.image; // image round: no instruction text, picture takes the stage
     body = `<div class="hostwrap"><div class="hostmain"><div class="card">
