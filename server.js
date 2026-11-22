@@ -544,7 +544,7 @@ const server = http.createServer(async (req, res) => {
     if (err) { res.writeHead(404); res.end('not found'); return; }
     const ext = path.extname(full);
     const type = ext === '.html' ? 'text/html; charset=utf-8' : ext === '.js' ? 'text/javascript' : ext === '.css' ? 'text/css' : 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': type });
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store, must-revalidate' });
     res.end(data);
   });
 });
