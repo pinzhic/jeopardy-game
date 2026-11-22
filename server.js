@@ -101,7 +101,11 @@ function resolveWrong(g, tpl, cq) {
   // cq = current question runtime
   const q = cq.q;
   const eligible = g.teams.filter(t => !cq.lockedTeamIds.includes(t.id));
-  if (q.type === 'choice' && tpl.settings.continueAfterWrong && eligible.length > 0) {
+  // choice and open questions (Movie Guessing, PPT rounds) continue to the
+  // remaining teams after a wrong answer — the answer is revealed only when
+  // no team is left to try. TF questions end at once (a wrong pick would hand
+  // the other teams the answer).
+  if ((q.type === 'choice' || q.type === 'open') && tpl.settings.continueAfterWrong && eligible.length > 0) {
     cq.phase = 'waiting';
     cq.phaseEndsAt = null;
     cq.buzzWinnerTeamId = null;
@@ -195,8 +199,10 @@ function stateFor(client) {
   base.code = g.code; base.phase = g.phase; base.startedAt = g.startedAt;
   base.title = g.title || g.templateSnapshot.name;
   base.answerSeconds = g.templateSnapshot.settings.answerSeconds;
+  if (g.current && g.current.q.answerSeconds != null) base.answerSeconds = g.current.q.answerSeconds; // per-question override (e.g. 30s PPT round)
   base.finalSeconds = g.templateSnapshot.settings.finalSeconds;
   base.finalDeadline = g.finalDeadline;
+  base.finalAnswerEndsAt = g.finalAnswerEndsAt || null; // display-only 5:00 countdown for the Slack-answer phase
   base.teams = publicTeams(g);
 
   if (client.kind === 'admin') {
@@ -411,10 +417,12 @@ const routes = {
     if (g.templateSnapshot.final.hostScored) {
       // peer-voting final: answers go to the host on Slack (nothing is collected or shown in the app); teams then vote for other teams' answers
       g.phase = 'final_answer'; g.finalDeadline = null;
+      g.finalAnswerEndsAt = Date.now() + 5 * 60 * 1000; // display-only 5:00 countdown on the host screen to hurry teams along — nothing is enforced when it runs out
       g.finalSubmissions = {}; g.finalReports = {}; g.finalResult = null;
     } else {
       g.phase = 'final_answer';
       g.finalDeadline = null; // no time limit on Final answers — the host closes answers manually
+      g.finalAnswerEndsAt = null;
     }
     changed(); send(res, 200, { ok: true });
   },
@@ -501,7 +509,8 @@ const routes = {
     if (cq.phase !== 'buzz') return send(res, 400, { error: 'Buzzing is not open' });
     if (cq.lockedTeamIds.includes(team.id)) return send(res, 400, { error: 'Your team is locked out of this question' });
     cq.buzzWinnerTeamId = team.id; cq.phase = 'answer';
-    const secs = g.templateSnapshot.settings.answerSeconds;
+    cq.submission = null; // a fresh attempt — clear any previous team's pick
+    const secs = cq.q.answerSeconds != null ? cq.q.answerSeconds : g.templateSnapshot.settings.answerSeconds;
     cq.answerDeadline = secs > 0 ? Date.now() + secs * 1000 : null;
     changed(); send(res, 200, { ok: true });
   },
